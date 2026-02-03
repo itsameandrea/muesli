@@ -1,0 +1,11 @@
+pub mod cli;
+pub mod config;
+pub mod daemon;
+pub mod audio;
+pub mod transcription;
+pub mod detection;
+pub mod notes;
+pub mod llm;
+pub mod storage;
+pub mod notification;
+pub mod error;
