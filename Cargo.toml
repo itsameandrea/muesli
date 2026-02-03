@@ -43,7 +43,7 @@ notify-rust = "4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 
 # HTTP client (for hosted APIs)
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
 
 # Error handling
 thiserror = "1.0"
