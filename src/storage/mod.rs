@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub mod database;
-pub mod models;
 pub mod migrations;
+pub mod models;
 
 /// Unique meeting identifier
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
