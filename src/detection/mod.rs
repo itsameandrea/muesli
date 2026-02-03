@@ -4,6 +4,9 @@ pub mod hyprland;
 pub mod patterns;
 pub mod detector;
 
+pub use detector::{DetectionState, DetectorEvent, MeetingDetector};
+pub use patterns::{detect_meeting_app, is_browser};
+
 /// Detected meeting application
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MeetingApp {
