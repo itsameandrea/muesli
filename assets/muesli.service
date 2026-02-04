@@ -1,0 +1,44 @@
+[Unit]
+Description=Muesli Daemon - Hyprland Window Manager Integration
+Documentation=https://github.com/itsameandrea/muesli
+After=network-online.target graphical-session.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/muesli daemon
+Restart=on-failure
+RestartSec=5
+
+# Environment variables for Wayland/Hyprland
+Environment="WAYLAND_DISPLAY=wayland-1"
+Environment="XDG_RUNTIME_DIR=%t"
+
+# Service hardening
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=muesli
+
+[Install]
+WantedBy=graphical-session.target
+
+# Installation instructions:
+# 1. Copy this file to ~/.config/systemd/user/muesli.service
+#    cp assets/muesli.service ~/.config/systemd/user/
+#
+# 2. Reload systemd user daemon:
+#    systemctl --user daemon-reload
+#
+# 3. Enable the service to start on login:
+#    systemctl --user enable muesli.service
+#
+# 4. Start the service immediately:
+#    systemctl --user start muesli.service
+#
+# 5. Check service status:
+#    systemctl --user status muesli.service
+#
+# 6. View logs:
+#    journalctl --user -u muesli.service -f
+#
+# Socket location: $XDG_RUNTIME_DIR/muesli/muesli.sock

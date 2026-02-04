@@ -63,19 +63,20 @@ impl Default for AudioConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptionConfig {
-    /// Transcription engine: "local", "deepgram", "openai"
+    /// Transcription engine: "whisper", "parakeet", "deepgram", "openai"
     #[serde(default = "default_engine")]
     pub engine: String,
-    /// Whisper model: "tiny", "base", "small", "medium", "large"
+    /// Whisper model: tiny, base, small, medium, large, large-v3-turbo, distil-large-v3
     #[serde(default = "default_model")]
     pub whisper_model: String,
-    /// Path to Whisper models directory
     pub whisper_model_path: Option<PathBuf>,
-    /// Deepgram API key
+    /// Parakeet model: parakeet-v3, parakeet-v3-int8, nemotron-streaming
+    #[serde(default = "default_parakeet_model")]
+    pub parakeet_model: String,
+    #[serde(default)]
+    pub use_gpu: bool,
     pub deepgram_api_key: Option<String>,
-    /// OpenAI API key (for Whisper API)
     pub openai_api_key: Option<String>,
-    /// Fallback to local on API failure
     #[serde(default = "default_true")]
     pub fallback_to_local: bool,
 }
@@ -83,9 +84,11 @@ pub struct TranscriptionConfig {
 impl Default for TranscriptionConfig {
     fn default() -> Self {
         Self {
-            engine: "local".to_string(),
+            engine: "whisper".to_string(),
             whisper_model: "base".to_string(),
             whisper_model_path: None,
+            parakeet_model: "parakeet-v3".to_string(),
+            use_gpu: false,
             deepgram_api_key: None,
             openai_api_key: None,
             fallback_to_local: true,
@@ -195,11 +198,15 @@ fn default_sample_rate() -> u32 {
 }
 
 fn default_engine() -> String {
-    "local".to_string()
+    "whisper".to_string()
 }
 
 fn default_model() -> String {
     "base".to_string()
+}
+
+fn default_parakeet_model() -> String {
+    "parakeet-v3".to_string()
 }
 
 fn default_llm_engine() -> String {
@@ -234,7 +241,7 @@ mod tests {
     fn test_default_config_creates() {
         let config = MuesliConfig::default();
         assert_eq!(config.audio.sample_rate, 16000);
-        assert_eq!(config.transcription.engine, "local");
+        assert_eq!(config.transcription.engine, "whisper");
         assert_eq!(config.llm.engine, "none");
     }
 
@@ -249,7 +256,7 @@ mod tests {
     #[test]
     fn test_transcription_config_defaults() {
         let trans = TranscriptionConfig::default();
-        assert_eq!(trans.engine, "local");
+        assert_eq!(trans.engine, "whisper");
         assert_eq!(trans.whisper_model, "base");
         assert!(trans.fallback_to_local);
     }

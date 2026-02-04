@@ -30,8 +30,9 @@ hound = "3.5"
 rubato = "0.15"
 bytemuck = "1.14"
 
-# Transcription - use git for whisper-rs
+# Transcription
 whisper-rs = { git = "https://codeberg.org/tazz4843/whisper-rs.git" }
+parakeet-rs = { version = "0.3", features = ["sortformer"] }
 
 # Hyprland
 hyprland = "0.4.0-beta.3"
@@ -43,7 +44,7 @@ notify-rust = "4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 
 # HTTP client (for hosted APIs)
-reqwest = { version = "0.12", features = ["json", "blocking"] }
+reqwest = { version = "0.12", features = ["json", "blocking", "multipart"] }
 
 # Error handling
 thiserror = "1.0"
@@ -57,6 +58,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.6", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 crossbeam = "0.8"
+
+[features]
+default = []
+vulkan = ["whisper-rs/vulkan"]
+cuda = ["whisper-rs/cuda"]
+metal = ["whisper-rs/metal"]
 
 [dev-dependencies]
 tempfile = "3.10"

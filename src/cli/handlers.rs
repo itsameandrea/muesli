@@ -1,42 +1,159 @@
 use crate::cli::commands::*;
 use crate::config;
+use crate::daemon::{DaemonClient, DaemonRequest, DaemonResponse};
+use crate::error::Result;
 use crate::storage::database::Database;
 use crate::storage::MeetingId;
+use crate::transcription::diarization_models::{DiarizationModel, DiarizationModelManager};
 use crate::transcription::models::{ModelManager, WhisperModel};
-use crate::error::Result;
+use crate::transcription::parakeet_models::{ParakeetModel, ParakeetModelManager};
+use crate::transcription::Transcript;
+use cpal::traits::{DeviceTrait, HostTrait};
 use std::io::Write;
-use cpal::traits::{HostTrait, DeviceTrait};
+use std::path::Path;
 
 pub async fn handle_command(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Start { title } => handle_start(title).await,
         Commands::Stop => handle_stop().await,
+        Commands::Toggle => handle_toggle().await,
         Commands::Status => handle_status().await,
         Commands::List { limit } => handle_list(limit).await,
         Commands::View { id } => handle_view(&id).await,
+        Commands::Transcribe { id, hosted } => handle_transcribe(&id, hosted).await,
         Commands::Daemon => handle_daemon().await,
         Commands::Config { action } => handle_config(action).await,
         Commands::Models { action } => handle_models(action).await,
+        Commands::Parakeet { action } => handle_parakeet(action).await,
         Commands::Audio { action } => handle_audio(action).await,
+        Commands::Diarization { action } => handle_diarization(action).await,
     }
 }
 
 async fn handle_start(title: Option<String>) -> Result<()> {
-    let title = title.unwrap_or_else(|| "Untitled Meeting".to_string());
-    println!("Starting recording: {}", title);
-    println!("(Daemon mode required for full functionality)");
+    let mut client = match DaemonClient::connect().await {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("Error: Daemon is not running. Start it with: muesli daemon");
+            return Ok(());
+        }
+    };
+
+    let request = DaemonRequest::StartRecording { title };
+    match client.send(request).await? {
+        DaemonResponse::RecordingStarted { meeting_id } => {
+            println!("Recording started (ID: {})", meeting_id);
+        }
+        DaemonResponse::Error { message } => {
+            eprintln!("Error: {}", message);
+        }
+        _ => {
+            eprintln!("Unexpected response from daemon");
+        }
+    }
     Ok(())
 }
 
 async fn handle_stop() -> Result<()> {
-    println!("Stopping recording...");
-    println!("(Daemon mode required for full functionality)");
+    let mut client = match DaemonClient::connect().await {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("Error: Daemon is not running.");
+            return Ok(());
+        }
+    };
+
+    match client.send(DaemonRequest::StopRecording).await? {
+        DaemonResponse::RecordingStopped { meeting_id } => {
+            println!("Recording stopped (ID: {})", meeting_id);
+
+            let db_path = config::loader::database_path()?;
+            let db = Database::open(&db_path)?;
+
+            let meeting = db
+                .get_meeting(&MeetingId::from_string(meeting_id.clone()))?
+                .ok_or_else(|| {
+                    crate::error::MuesliError::MeetingNotFound(meeting_id.clone())
+                })?;
+
+            let segments = db.get_transcript_segments(&meeting.id)?;
+            
+            if !segments.is_empty() {
+                println!("\nTranscript ({} segments, processing speakers in background):\n", segments.len());
+                for segment in &segments {
+                    print_segment(segment);
+                }
+                println!("\nView final transcript with: muesli view {}", meeting_id);
+            } else {
+                println!("Transcription processing in background...");
+                println!("View transcript with: muesli view {}", meeting_id);
+            }
+        }
+        DaemonResponse::Error { message } => {
+            eprintln!("Error: {}", message);
+        }
+        _ => {
+            eprintln!("Unexpected response from daemon");
+        }
+    }
+    Ok(())
+}
+
+async fn handle_toggle() -> Result<()> {
+    let mut client = match DaemonClient::connect().await {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("Error: Daemon is not running. Start it with: muesli daemon");
+            return Ok(());
+        }
+    };
+
+    match client.send(DaemonRequest::GetStatus).await? {
+        DaemonResponse::Status(status) => {
+            if status.recording {
+                drop(client);
+                return handle_stop().await;
+            } else {
+                drop(client);
+                return handle_start(None).await;
+            }
+        }
+        _ => {
+            eprintln!("Unexpected response from daemon");
+        }
+    }
     Ok(())
 }
 
 async fn handle_status() -> Result<()> {
-    println!("Status: idle");
-    println!("Daemon: not running");
+    let mut client = match DaemonClient::connect().await {
+        Ok(c) => c,
+        Err(_) => {
+            println!("Daemon: not running");
+            println!("Status: offline");
+            return Ok(());
+        }
+    };
+
+    match client.send(DaemonRequest::GetStatus).await? {
+        DaemonResponse::Status(status) => {
+            println!("Daemon: running (uptime: {}s)", status.uptime_seconds);
+            if status.recording {
+                println!("Status: recording");
+                if let Some(meeting) = status.current_meeting {
+                    println!("Meeting: {}", meeting);
+                }
+            } else {
+                println!("Status: idle");
+            }
+            if let Some(app) = status.meeting_detected {
+                println!("Detected: {} meeting window", app);
+            }
+        }
+        _ => {
+            eprintln!("Unexpected response from daemon");
+        }
+    }
     Ok(())
 }
 
@@ -96,6 +213,14 @@ async fn handle_view(id: &str) -> Result<()> {
     }
     println!("Status: {}", meeting.status);
 
+    let segments = db.get_transcript_segments(&meeting.id)?;
+    if !segments.is_empty() {
+        println!("\n--- Transcript ---\n");
+        for segment in segments {
+            print_segment(&segment);
+        }
+    }
+
     if let Some(notes_path) = &meeting.notes_path {
         if notes_path.exists() {
             println!("\n--- Notes ---\n");
@@ -107,10 +232,210 @@ async fn handle_view(id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn handle_daemon() -> Result<()> {
-    println!("Starting daemon...");
-    println!("(Full daemon implementation in Task 17)");
+async fn do_transcribe<P: AsRef<Path>>(audio_path: P, verbose: bool) -> Result<Transcript> {
+    let cfg = config::loader::load_config()?;
+    let engine = cfg.transcription.engine.to_lowercase();
+    let audio_path = audio_path.as_ref();
+
+    let mut transcript = match engine.as_str() {
+        "whisper" => {
+            let models_dir = config::loader::models_dir()?;
+            let manager = ModelManager::new(models_dir);
+
+            let model = WhisperModel::from_str(&cfg.transcription.whisper_model)
+                .unwrap_or(WhisperModel::Base);
+            
+            if !manager.model_exists(model) {
+                return Err(crate::error::MuesliError::Config(format!(
+                    "Whisper model '{}' not downloaded. Run: muesli models download {}",
+                    cfg.transcription.whisper_model, cfg.transcription.whisper_model
+                )));
+            }
+
+            if verbose {
+                println!("Using local Whisper ({})...", model);
+            }
+            let whisper = crate::transcription::whisper::WhisperEngine::from_model(
+                &manager,
+                model,
+                cfg.transcription.use_gpu,
+            )?;
+            crate::transcription::whisper::transcribe_wav_file(&whisper, audio_path)?
+        }
+        "parakeet" => {
+            let models_dir = config::loader::models_dir()?;
+            let manager = ParakeetModelManager::new(models_dir);
+
+            let model = ParakeetModel::from_str(&cfg.transcription.parakeet_model)
+                .unwrap_or(ParakeetModel::TdtV3);
+            
+            if !manager.model_exists(model) {
+                return Err(crate::error::MuesliError::Config(format!(
+                    "Parakeet model '{}' not downloaded. Run: muesli parakeet download {}",
+                    cfg.transcription.parakeet_model, cfg.transcription.parakeet_model
+                )));
+            }
+
+            if verbose {
+                println!("Using local Parakeet ({})...", model);
+            }
+            let model_dir = manager.model_dir(model);
+            let mut parakeet = crate::transcription::parakeet::ParakeetEngine::new();
+            parakeet.load_model(&model_dir, model.uses_int8())?;
+            crate::transcription::parakeet::transcribe_wav_file(&mut parakeet, audio_path)?
+        }
+        "deepgram" => {
+            let api_key = cfg.transcription.deepgram_api_key.as_ref().ok_or_else(|| {
+                crate::error::MuesliError::Config(
+                    "Deepgram API key not configured. Set deepgram_api_key in config".into(),
+                )
+            })?;
+
+            if verbose {
+                println!("Using Deepgram API...");
+            }
+            crate::transcription::deepgram::transcribe_file(api_key, audio_path).await?
+        }
+        "openai" => {
+            let api_key = cfg.transcription.openai_api_key.as_ref().ok_or_else(|| {
+                crate::error::MuesliError::Config(
+                    "OpenAI API key not configured. Set openai_api_key in config".into(),
+                )
+            })?;
+
+            if verbose {
+                println!("Using OpenAI Whisper API...");
+            }
+            crate::transcription::openai::transcribe_file(api_key, audio_path).await?
+        }
+        _ => return Err(crate::error::MuesliError::Config(format!(
+            "Unknown transcription engine '{}'. Use: whisper, parakeet, deepgram, or openai",
+            engine
+        ))),
+    };
+
+    let models_dir = config::loader::models_dir()?;
+    let diar_manager = DiarizationModelManager::new(models_dir);
+    
+    let diar_model = DiarizationModel::SortformerV2;
+    if !diar_manager.model_exists(diar_model) {
+        return Err(crate::error::MuesliError::Config(
+            "Diarization model not found. Run: muesli diarization download sortformer-v2".into()
+        ));
+    }
+    
+    if verbose {
+        println!("Running speaker diarization...");
+    }
+    
+    let model_path = diar_manager.model_path(diar_model);
+    let samples = load_wav_samples(audio_path)?;
+    
+    crate::transcription::diarization::diarize_transcript(
+        &model_path,
+        &samples,
+        16000,
+        &mut transcript,
+    )?;
+
+    Ok(transcript)
+}
+
+fn load_wav_samples<P: AsRef<Path>>(path: P) -> Result<Vec<f32>> {
+    use hound::WavReader;
+    
+    let mut reader = WavReader::open(path.as_ref())
+        .map_err(|e| crate::error::MuesliError::Audio(format!("Failed to open WAV: {}", e)))?;
+    
+    let spec = reader.spec();
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Int => {
+            let max_val = (1 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .samples::<i32>()
+                .filter_map(|s| s.ok())
+                .map(|s| s as f32 / max_val)
+                .collect()
+        }
+        hound::SampleFormat::Float => {
+            reader.samples::<f32>().filter_map(|s| s.ok()).collect()
+        }
+    };
+    
+    if spec.channels > 1 {
+        Ok(samples.chunks(spec.channels as usize)
+            .map(|chunk| chunk.iter().sum::<f32>() / chunk.len() as f32)
+            .collect())
+    } else {
+        Ok(samples)
+    }
+}
+
+async fn handle_transcribe(id: &str, hosted: bool) -> Result<()> {
+    let db_path = config::loader::database_path()?;
+    let db = Database::open(&db_path)?;
+
+    let meeting = db
+        .get_meeting(&MeetingId::from_string(id.to_string()))?
+        .ok_or_else(|| crate::error::MuesliError::MeetingNotFound(id.to_string()))?;
+
+    let audio_path = meeting
+        .audio_path
+        .as_ref()
+        .ok_or_else(|| crate::error::MuesliError::Audio("No audio file for this meeting".into()))?;
+
+    if !audio_path.exists() {
+        return Err(crate::error::MuesliError::Audio(format!(
+            "Audio file not found: {}",
+            audio_path.display()
+        )));
+    }
+
+    println!("Transcribing: {}", meeting.title);
+    println!("Audio: {}", audio_path.display());
+
+    let transcript = if hosted {
+        let cfg = config::loader::load_config()?;
+        let api_key = cfg
+            .transcription
+            .deepgram_api_key
+            .as_ref()
+            .or(cfg.transcription.openai_api_key.as_ref())
+            .ok_or_else(|| {
+                crate::error::MuesliError::Config(
+                    "No API key configured. Set deepgram_api_key or openai_api_key in config".into(),
+                )
+            })?;
+
+        println!("Using hosted API...");
+        if cfg.transcription.deepgram_api_key.is_some() {
+            crate::transcription::deepgram::transcribe_file(api_key, audio_path).await?
+        } else {
+            crate::transcription::openai::transcribe_file(api_key, audio_path).await?
+        }
+    } else {
+        do_transcribe(audio_path, true).await?
+    };
+
+    println!("\nTranscript ({} segments):\n", transcript.segments.len());
+    for segment in &transcript.segments {
+        print_segment(segment);
+    }
+
+    db.insert_transcript_segments(&meeting.id, &transcript.segments)?;
+    println!("\nTranscript saved to database.");
+
     Ok(())
+}
+
+async fn handle_daemon() -> Result<()> {
+    if DaemonClient::ping().await? {
+        eprintln!("Error: Daemon is already running.");
+        return Ok(());
+    }
+
+    println!("Starting muesli daemon...");
+    crate::daemon::run_daemon().await
 }
 
 async fn handle_config(action: ConfigCommands) -> Result<()> {
@@ -160,7 +485,7 @@ async fn handle_models(action: ModelCommands) -> Result<()> {
         ModelCommands::Download { model } => {
             let whisper_model = WhisperModel::from_str(&model).ok_or_else(|| {
                 crate::error::MuesliError::Config(format!(
-                    "Unknown model: {}. Use: tiny, base, small, medium, large",
+                    "Unknown model: {}. Use: tiny, base, small, medium, large, large-v3-turbo, distil-large-v3",
                     model
                 ))
             })?;
@@ -190,6 +515,60 @@ async fn handle_models(action: ModelCommands) -> Result<()> {
             })?;
 
             manager.delete_model(whisper_model)?;
+            println!("Deleted {} model", model);
+        }
+    }
+    Ok(())
+}
+
+async fn handle_parakeet(action: ParakeetCommands) -> Result<()> {
+    let models_dir = config::loader::models_dir()?;
+    let manager = ParakeetModelManager::new(models_dir);
+
+    match action {
+        ParakeetCommands::List => {
+            println!("{:<20} {:<12} {:<10}", "Model", "Size (MB)", "Downloaded");
+            println!("{}", "-".repeat(45));
+
+            for (model, exists, size) in manager.list_all() {
+                let status = if exists { "✓" } else { "-" };
+                println!("{:<20} {:<12} {:<10}", model, size, status);
+            }
+        }
+        ParakeetCommands::Download { model } => {
+            let parakeet_model = ParakeetModel::from_str(&model).ok_or_else(|| {
+                crate::error::MuesliError::Config(format!(
+                    "Unknown model: {}. Use: parakeet-v3, parakeet-v3-int8, nemotron-streaming",
+                    model
+                ))
+            })?;
+
+            println!(
+                "Downloading {} (~{} MB total)...",
+                parakeet_model,
+                parakeet_model.size_mb()
+            );
+
+            let path = manager.download_model(parakeet_model, |filename, downloaded, total| {
+                let percent = (downloaded as f64 / total as f64 * 100.0) as u32;
+                print!(
+                    "\r{}: {}% ({}/{} MB)    ",
+                    filename,
+                    percent,
+                    downloaded / 1024 / 1024,
+                    total / 1024 / 1024
+                );
+                std::io::stdout().flush().ok();
+            })?;
+
+            println!("\nDownloaded to: {}", path.display());
+        }
+        ParakeetCommands::Delete { model } => {
+            let parakeet_model = ParakeetModel::from_str(&model).ok_or_else(|| {
+                crate::error::MuesliError::Config(format!("Unknown model: {}", model))
+            })?;
+
+            manager.delete_model(parakeet_model)?;
             println!("Deleted {} model", model);
         }
     }
@@ -245,10 +624,74 @@ async fn handle_audio(action: AudioCommands) -> Result<()> {
     Ok(())
 }
 
+async fn handle_diarization(action: DiarizationCommands) -> Result<()> {
+    let models_dir = config::loader::models_dir()?;
+    let manager = DiarizationModelManager::new(models_dir);
+
+    match action {
+        DiarizationCommands::List => {
+            println!("{:<20} {:<12} {:<10}", "Model", "Size (MB)", "Downloaded");
+            println!("{}", "-".repeat(45));
+
+            for (model, exists, size) in manager.list_all() {
+                let status = if exists { "✓" } else { "-" };
+                println!("{:<20} {:<12} {:<10}", model, size, status);
+            }
+        }
+        DiarizationCommands::Download { model } => {
+            let diar_model = DiarizationModel::from_str(&model).ok_or_else(|| {
+                crate::error::MuesliError::Config(format!(
+                    "Unknown model: {}. Use: sortformer-v2",
+                    model
+                ))
+            })?;
+
+            println!(
+                "Downloading {} (~{} MB)...",
+                diar_model,
+                diar_model.size_mb()
+            );
+
+            let path = tokio::task::spawn_blocking(move || {
+                manager.download_model(diar_model, |downloaded, total| {
+                    let percent = (downloaded as f64 / total as f64 * 100.0) as u32;
+                    print!(
+                        "\rProgress: {}% ({}/{} MB)",
+                        percent,
+                        downloaded / 1024 / 1024,
+                        total / 1024 / 1024
+                    );
+                    std::io::stdout().flush().ok();
+                })
+            })
+            .await
+            .map_err(|e| crate::error::MuesliError::Config(format!("Download task failed: {}", e)))??;
+
+            println!("\nDownloaded to: {}", path.display());
+        }
+        DiarizationCommands::Delete { model } => {
+            let diar_model = DiarizationModel::from_str(&model).ok_or_else(|| {
+                crate::error::MuesliError::Config(format!("Unknown model: {}", model))
+            })?;
+
+            manager.delete_model(diar_model)?;
+            println!("Deleted {} model", model);
+        }
+    }
+    Ok(())
+}
+
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {
         format!("{}...", &s[..max_len - 3])
+    }
+}
+
+fn print_segment(segment: &crate::transcription::TranscriptSegment) {
+    match &segment.speaker {
+        Some(speaker) => println!("[{}] [{}] {}", segment.format_timestamp(), speaker, segment.text),
+        None => println!("[{}] {}", segment.format_timestamp(), segment.text),
     }
 }

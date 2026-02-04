@@ -10,16 +10,20 @@ pub enum WhisperModel {
     Small,
     Medium,
     Large,
+    LargeV3Turbo,
+    DistilLargeV3,
 }
 
 impl WhisperModel {
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
+        match s.to_lowercase().replace("-", "").replace("_", "").as_str() {
             "tiny" => Some(Self::Tiny),
             "base" => Some(Self::Base),
             "small" => Some(Self::Small),
             "medium" => Some(Self::Medium),
             "large" => Some(Self::Large),
+            "largev3turbo" => Some(Self::LargeV3Turbo),
+            "distillargev3" => Some(Self::DistilLargeV3),
             _ => None,
         }
     }
@@ -31,6 +35,8 @@ impl WhisperModel {
             Self::Small => "ggml-small.bin",
             Self::Medium => "ggml-medium.bin",
             Self::Large => "ggml-large.bin",
+            Self::LargeV3Turbo => "ggml-large-v3-turbo.bin",
+            Self::DistilLargeV3 => "ggml-distil-large-v3.bin",
         }
     }
 
@@ -47,6 +53,12 @@ impl WhisperModel {
             Self::Large => {
                 "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large.bin"
             }
+            Self::LargeV3Turbo => {
+                "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin"
+            }
+            Self::DistilLargeV3 => {
+                "https://huggingface.co/distil-whisper/distil-large-v3-ggml/resolve/main/ggml-distil-large-v3.bin"
+            }
         }
     }
 
@@ -57,6 +69,8 @@ impl WhisperModel {
             Self::Small => 466,
             Self::Medium => 1500,
             Self::Large => 2900,
+            Self::LargeV3Turbo => 1620,
+            Self::DistilLargeV3 => 1520,
         }
     }
 
@@ -67,6 +81,8 @@ impl WhisperModel {
             Self::Small,
             Self::Medium,
             Self::Large,
+            Self::LargeV3Turbo,
+            Self::DistilLargeV3,
         ]
     }
 }
@@ -79,6 +95,8 @@ impl std::fmt::Display for WhisperModel {
             Self::Small => write!(f, "small"),
             Self::Medium => write!(f, "medium"),
             Self::Large => write!(f, "large"),
+            Self::LargeV3Turbo => write!(f, "large-v3-turbo"),
+            Self::DistilLargeV3 => write!(f, "distil-large-v3"),
         }
     }
 }
@@ -210,7 +228,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let manager = ModelManager::new(dir.path().to_path_buf());
         let models = manager.list_all();
-        assert_eq!(models.len(), 5);
+        assert_eq!(models.len(), 7);
     }
 
     #[test]
@@ -287,11 +305,13 @@ mod tests {
     #[test]
     fn test_all_models() {
         let all = WhisperModel::all();
-        assert_eq!(all.len(), 5);
+        assert_eq!(all.len(), 7);
         assert!(all.contains(&WhisperModel::Tiny));
         assert!(all.contains(&WhisperModel::Base));
         assert!(all.contains(&WhisperModel::Small));
         assert!(all.contains(&WhisperModel::Medium));
         assert!(all.contains(&WhisperModel::Large));
+        assert!(all.contains(&WhisperModel::LargeV3Turbo));
+        assert!(all.contains(&WhisperModel::DistilLargeV3));
     }
 }

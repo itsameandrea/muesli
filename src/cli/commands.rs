@@ -31,6 +31,9 @@ pub enum Commands {
     /// Stop recording and process notes
     Stop,
 
+    /// Toggle recording on/off
+    Toggle,
+
     /// Show current recording status
     Status,
 
@@ -45,6 +48,15 @@ pub enum Commands {
     View {
         /// Meeting ID to view
         id: String,
+    },
+
+    /// Transcribe a meeting recording
+    Transcribe {
+        /// Meeting ID to transcribe
+        id: String,
+        /// Use hosted API instead of local Whisper
+        #[arg(long)]
+        hosted: bool,
     },
 
     /// Run daemon mode (background meeting detection)
@@ -62,10 +74,22 @@ pub enum Commands {
         action: ModelCommands,
     },
 
+    /// Parakeet model management (ONNX-based, faster)
+    Parakeet {
+        #[command(subcommand)]
+        action: ParakeetCommands,
+    },
+
     /// Audio device management
     Audio {
         #[command(subcommand)]
         action: AudioCommands,
+    },
+
+    /// Speaker diarization model management
+    Diarization {
+        #[command(subcommand)]
+        action: DiarizationCommands,
     },
 }
 
@@ -87,7 +111,20 @@ pub enum ModelCommands {
     List,
     /// Download a Whisper model
     Download {
-        /// Model name: tiny, base, small, medium, large
+        /// Model name: tiny, base, small, medium, large, large-v3-turbo, distil-large-v3
+        model: String,
+    },
+    /// Delete a downloaded model
+    Delete { model: String },
+}
+
+#[derive(Subcommand)]
+pub enum ParakeetCommands {
+    /// List available Parakeet models
+    List,
+    /// Download a Parakeet model
+    Download {
+        /// Model name: parakeet-v3, parakeet-v3-int8, nemotron-streaming
         model: String,
     },
     /// Delete a downloaded model
@@ -111,4 +148,17 @@ pub enum AudioCommands {
         #[arg(short, long, default_value = "3")]
         duration: u64,
     },
+}
+
+#[derive(Subcommand)]
+pub enum DiarizationCommands {
+    /// List available diarization models
+    List,
+    /// Download a diarization model
+    Download {
+        /// Model name: sortformer-v2
+        model: String,
+    },
+    /// Delete a downloaded model
+    Delete { model: String },
 }

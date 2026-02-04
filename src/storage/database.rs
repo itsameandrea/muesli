@@ -208,6 +208,14 @@ impl Database {
 
         Ok(segments)
     }
+
+    pub fn delete_transcript_segments(&self, meeting_id: &MeetingId) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM transcripts WHERE meeting_id = ?1",
+            [&meeting_id.0],
+        )?;
+        Ok(())
+    }
 }
 
 fn parse_status(s: &str) -> MeetingStatus {

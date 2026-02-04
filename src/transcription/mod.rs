@@ -1,9 +1,14 @@
 use serde::{Deserialize, Serialize};
 
 pub mod whisper;
+pub mod parakeet;
+pub mod parakeet_models;
+pub mod streaming;
 pub mod deepgram;
 pub mod openai;
 pub mod models;
+pub mod diarization;
+pub mod diarization_models;
 
 /// A segment of transcribed text
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,7 +69,12 @@ impl Transcript {
 /// Transcription engine selection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TranscriptionEngine {
+    /// Local Whisper (whisper.cpp)
     Local,
+    /// Local Parakeet (ONNX Runtime)
+    Parakeet,
+    /// Deepgram API
     Deepgram,
+    /// OpenAI Whisper API
     OpenAI,
 }
