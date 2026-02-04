@@ -210,6 +210,31 @@ Output ONLY the markdown, no preamble."#,
     )
 }
 
+pub fn title_generation_prompt(meeting_notes: &str) -> String {
+    format!(
+        r#"Generate a concise, descriptive title for this meeting based on the notes below.
+
+MEETING NOTES:
+{notes}
+
+RULES:
+- 3-8 words maximum
+- Capture the main topic or purpose
+- Use title case
+- No quotes, no punctuation at the end
+- Be specific, not generic (avoid "Team Meeting", "Weekly Sync")
+
+Examples of good titles:
+- Product Roadmap Q2 Planning
+- Customer Onboarding Flow Review
+- Engineering Hiring Strategy
+- Bug Triage and Sprint Planning
+
+Output ONLY the title, nothing else."#,
+        notes = meeting_notes
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

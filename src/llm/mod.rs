@@ -61,6 +61,25 @@ pub async fn summarize_transcript(
     })
 }
 
+pub async fn generate_title(config: &LlmConfig, meeting_notes: &str) -> Result<String> {
+    let provider = LlmProvider::from_engine(&config.engine)
+        .context("Invalid LLM engine specified")?;
+
+    let prompt = prompts::title_generation_prompt(meeting_notes);
+    let title = call_llm(config, provider, &prompt).await?;
+
+    let cleaned = title
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .lines()
+        .next()
+        .unwrap_or("Untitled Meeting")
+        .to_string();
+
+    Ok(cleaned)
+}
+
 async fn summarize_chunked(
     config: &LlmConfig,
     provider: LlmProvider,

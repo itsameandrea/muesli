@@ -748,7 +748,7 @@ async fn handle_summarize(id: &str) -> Result<()> {
     let db = Database::open(&db_path)?;
 
     let meeting_id = MeetingId::from_string(id.to_string());
-    let meeting = db
+    let mut meeting = db
         .get_meeting(&meeting_id)?
         .ok_or_else(|| crate::error::MuesliError::MeetingNotFound(id.to_string()))?;
 
@@ -770,6 +770,20 @@ async fn handle_summarize(id: &str) -> Result<()> {
         Ok(summary) => {
             println!("{}\n", summary.markdown);
 
+            if meeting.title == "Untitled Meeting" {
+                println!("Generating title...");
+                match crate::llm::generate_title(&cfg.llm, &summary.markdown).await {
+                    Ok(title) => {
+                        println!("Generated title: {}", title);
+                        meeting.title = title;
+                        let _ = db.update_meeting(&meeting);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to generate title: {}", e);
+                    }
+                }
+            }
+
             db.insert_summary(&meeting_id, &summary)?;
             println!("\n---\nSaved to database.");
 
@@ -778,9 +792,8 @@ async fn handle_summarize(id: &str) -> Result<()> {
             match generator.generate(&meeting, &transcript, &summary) {
                 Ok(path) => {
                     println!("Notes file: {}", path.display());
-                    let mut updated = meeting.clone();
-                    updated.notes_path = Some(path);
-                    let _ = db.update_meeting(&updated);
+                    meeting.notes_path = Some(path);
+                    let _ = db.update_meeting(&meeting);
                 }
                 Err(e) => {
                     eprintln!("Failed to save notes file: {}", e);

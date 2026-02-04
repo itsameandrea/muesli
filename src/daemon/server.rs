@@ -701,6 +701,19 @@ fn run_background_summarization(meeting_id: String) {
                 tracing::info!("Summary saved for meeting {}", meeting_id);
             }
 
+            if let Ok(Some(meeting)) = db.get_meeting(&meeting_id_obj) {
+                if meeting.title == "Untitled Meeting" {
+                    tracing::info!("Generating title for untitled meeting");
+                    let title_result = rt.block_on(crate::llm::generate_title(&cfg.llm, &summary.markdown));
+                    if let Ok(title) = title_result {
+                        tracing::info!("Generated title: {}", title);
+                        let mut updated = meeting;
+                        updated.title = title;
+                        let _ = db.update_meeting(&updated);
+                    }
+                }
+            }
+
             generate_meeting_notes(&db, &meeting_id_obj, &transcript, &summary);
         }
         Err(e) => {
