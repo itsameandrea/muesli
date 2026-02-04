@@ -623,8 +623,128 @@ fn run_background_diarization(meeting_id: String, audio_path: PathBuf) {
         }
     }
     
+    run_background_summarization(meeting_id.clone());
+    
     mark_meeting_complete(&meeting_id);
-    let _ = notification::notify_status(&format!("Diarization complete for meeting"));
+    let _ = notification::notify_status(&format!("Processing complete for meeting"));
+}
+
+fn run_background_summarization(meeting_id: String) {
+    let cfg = match crate::config::loader::load_config() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Failed to load config for summarization: {}", e);
+            return;
+        }
+    };
+
+    if cfg.llm.engine == "none" {
+        tracing::debug!("LLM engine is 'none', skipping summarization");
+        return;
+    }
+
+    tracing::info!("Starting background summarization for meeting {}", meeting_id);
+
+    let db_path = match database_path() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("Failed to get database path: {}", e);
+            return;
+        }
+    };
+
+    let db = match Database::open(&db_path) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!("Failed to open database: {}", e);
+            return;
+        }
+    };
+
+    let meeting_id_obj = crate::storage::MeetingId::from_string(meeting_id.clone());
+    let segments = match db.get_transcript_segments(&meeting_id_obj) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("Failed to get transcript segments: {}", e);
+            return;
+        }
+    };
+
+    if segments.is_empty() {
+        tracing::warn!("No transcript segments for summarization");
+        return;
+    }
+
+    let transcript = crate::transcription::Transcript::new(segments);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build();
+
+    let rt = match rt {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("Failed to create tokio runtime: {}", e);
+            return;
+        }
+    };
+
+    let result = rt.block_on(crate::llm::summarize_transcript(&cfg.llm, &transcript));
+
+    match result {
+        Ok(summary) => {
+            tracing::info!("Summarization complete: {} chars", summary.markdown.len());
+
+            if let Err(e) = db.insert_summary(&meeting_id_obj, &summary) {
+                tracing::error!("Failed to save summary: {}", e);
+            } else {
+                tracing::info!("Summary saved for meeting {}", meeting_id);
+            }
+
+            generate_meeting_notes(&db, &meeting_id_obj, &transcript, &summary);
+        }
+        Err(e) => {
+            tracing::error!("Summarization failed: {}", e);
+        }
+    }
+}
+
+fn generate_meeting_notes(
+    db: &Database,
+    meeting_id: &crate::storage::MeetingId,
+    transcript: &crate::transcription::Transcript,
+    summary: &crate::llm::SummaryResult,
+) {
+    let meeting = match db.get_meeting(meeting_id) {
+        Ok(Some(m)) => m,
+        _ => {
+            tracing::error!("Failed to get meeting for notes generation");
+            return;
+        }
+    };
+
+    let notes_dir = match crate::config::loader::notes_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!("Failed to get notes dir: {}", e);
+            return;
+        }
+    };
+
+    let generator = crate::notes::markdown::NoteGenerator::new(notes_dir);
+    match generator.generate(&meeting, transcript, summary) {
+        Ok(path) => {
+            tracing::info!("Generated notes: {}", path.display());
+            let mut updated_meeting = meeting;
+            updated_meeting.notes_path = Some(path);
+            if let Err(e) = db.update_meeting(&updated_meeting) {
+                tracing::error!("Failed to update meeting with notes path: {}", e);
+            }
+        }
+        Err(e) => {
+            tracing::error!("Failed to generate notes: {}", e);
+        }
+    }
 }
 
 fn run_background_transcription_and_diarization(meeting_id: String, audio_path: PathBuf) {

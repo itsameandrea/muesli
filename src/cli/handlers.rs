@@ -19,7 +19,8 @@ pub async fn handle_command(cli: Cli) -> Result<()> {
         Commands::Toggle => handle_toggle().await,
         Commands::Status => handle_status().await,
         Commands::List { limit } => handle_list(limit).await,
-        Commands::View { id } => handle_view(&id).await,
+        Commands::Notes { id } => handle_notes(id).await,
+        Commands::Transcript { id } => handle_transcript(id).await,
         Commands::Transcribe { id, hosted } => handle_transcribe(&id, hosted).await,
         Commands::Daemon => handle_daemon().await,
         Commands::Config { action } => handle_config(action).await,
@@ -27,6 +28,7 @@ pub async fn handle_command(cli: Cli) -> Result<()> {
         Commands::Parakeet { action } => handle_parakeet(action).await,
         Commands::Audio { action } => handle_audio(action).await,
         Commands::Diarization { action } => handle_diarization(action).await,
+        Commands::Summarize { id } => handle_summarize(&id).await,
     }
 }
 
@@ -194,42 +196,95 @@ async fn handle_list(limit: usize) -> Result<()> {
     Ok(())
 }
 
-async fn handle_view(id: &str) -> Result<()> {
+async fn handle_notes(id: Option<String>) -> Result<()> {
     let db_path = config::loader::database_path()?;
     let db = Database::open(&db_path)?;
 
+    let meeting_id = match id {
+        Some(id) => id,
+        None => select_meeting_interactive(&db)?,
+    };
+
     let meeting = db
-        .get_meeting(&MeetingId::from_string(id.to_string()))?
-        .ok_or_else(|| crate::error::MuesliError::MeetingNotFound(id.to_string()))?;
+        .get_meeting(&MeetingId::from_string(meeting_id.clone()))?
+        .ok_or_else(|| crate::error::MuesliError::MeetingNotFound(meeting_id))?;
 
-    println!("Meeting: {}", meeting.title);
-    println!("ID: {}", meeting.id);
-    println!("Started: {}", meeting.started_at);
-    if let Some(ended) = meeting.ended_at {
-        println!("Ended: {}", ended);
-    }
-    if let Some(duration) = meeting.duration_seconds {
-        println!("Duration: {} minutes", duration / 60);
-    }
-    println!("Status: {}", meeting.status);
-
-    let segments = db.get_transcript_segments(&meeting.id)?;
-    if !segments.is_empty() {
-        println!("\n--- Transcript ---\n");
-        for segment in segments {
-            print_segment(&segment);
-        }
-    }
-
-    if let Some(notes_path) = &meeting.notes_path {
-        if notes_path.exists() {
-            println!("\n--- Notes ---\n");
-            let content = std::fs::read_to_string(notes_path)?;
-            println!("{}", content);
-        }
+    if let Ok(Some(summary)) = db.get_summary(&meeting.id) {
+        println!("\n# {}\n", meeting.title);
+        println!("**Date:** {} | **Duration:** {}\n", 
+            meeting.started_at.format("%Y-%m-%d %H:%M"),
+            meeting.duration_seconds.map(|d| format!("{}m {}s", d / 60, d % 60)).unwrap_or("?".to_string())
+        );
+        println!("{}", summary.markdown);
+    } else {
+        println!("\nNo notes available for: {}", meeting.title);
+        println!("Run: muesli summarize {}\n", meeting.id);
     }
 
     Ok(())
+}
+
+async fn handle_transcript(id: Option<String>) -> Result<()> {
+    let db_path = config::loader::database_path()?;
+    let db = Database::open(&db_path)?;
+
+    let meeting_id = match id {
+        Some(id) => id,
+        None => select_meeting_interactive(&db)?,
+    };
+
+    let meeting = db
+        .get_meeting(&MeetingId::from_string(meeting_id.clone()))?
+        .ok_or_else(|| crate::error::MuesliError::MeetingNotFound(meeting_id))?;
+
+    println!("\n{}", "=".repeat(60));
+    println!("  {} - Transcript", meeting.title);
+    println!("{}", "=".repeat(60));
+    println!();
+
+    let segments = db.get_transcript_segments(&meeting.id)?;
+    if segments.is_empty() {
+        println!("No transcript available.");
+        return Ok(());
+    }
+
+    println!("{} segments\n", segments.len());
+
+    for segment in segments {
+        print_segment(&segment);
+    }
+
+    Ok(())
+}
+
+fn select_meeting_interactive(db: &Database) -> Result<String> {
+    use dialoguer::{theme::ColorfulTheme, Select};
+
+    let meetings = db.list_meetings(20)?;
+    
+    if meetings.is_empty() {
+        return Err(crate::error::MuesliError::Config("No meetings found".to_string()).into());
+    }
+
+    let items: Vec<String> = meetings
+        .iter()
+        .map(|m| {
+            let date = m.started_at.format("%Y-%m-%d %H:%M");
+            let duration = m.duration_seconds
+                .map(|d| format!("{}m", d / 60))
+                .unwrap_or_else(|| "?".to_string());
+            format!("{} | {} | {}", date, duration, truncate(&m.title, 40))
+        })
+        .collect();
+
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select a meeting")
+        .items(&items)
+        .default(0)
+        .interact()
+        .map_err(|e| crate::error::MuesliError::Config(format!("Selection cancelled: {}", e)))?;
+
+    Ok(meetings[selection].id.0.clone())
 }
 
 async fn do_transcribe<P: AsRef<Path>>(audio_path: P, verbose: bool) -> Result<Transcript> {
@@ -678,6 +733,65 @@ async fn handle_diarization(action: DiarizationCommands) -> Result<()> {
             println!("Deleted {} model", model);
         }
     }
+    Ok(())
+}
+
+async fn handle_summarize(id: &str) -> Result<()> {
+    let cfg = config::loader::load_config()?;
+
+    if cfg.llm.engine == "none" {
+        eprintln!("Error: LLM engine not configured. Set [llm] engine = \"local\" in config.");
+        return Ok(());
+    }
+
+    let db_path = config::loader::database_path()?;
+    let db = Database::open(&db_path)?;
+
+    let meeting_id = MeetingId::from_string(id.to_string());
+    let meeting = db
+        .get_meeting(&meeting_id)?
+        .ok_or_else(|| crate::error::MuesliError::MeetingNotFound(id.to_string()))?;
+
+    println!("Summarizing meeting: {}", meeting.title);
+
+    let segments = db.get_transcript_segments(&meeting_id)?;
+    if segments.is_empty() {
+        eprintln!("Error: No transcript found for this meeting.");
+        return Ok(());
+    }
+
+    println!("Found {} transcript segments", segments.len());
+    println!("Calling LLM (this may take a while)...\n");
+
+    let transcript = crate::transcription::Transcript::new(segments);
+    let result = crate::llm::summarize_transcript(&cfg.llm, &transcript).await;
+
+    match result {
+        Ok(summary) => {
+            println!("{}\n", summary.markdown);
+
+            db.insert_summary(&meeting_id, &summary)?;
+            println!("\n---\nSaved to database.");
+
+            let notes_dir = config::loader::notes_dir()?;
+            let generator = crate::notes::markdown::NoteGenerator::new(notes_dir);
+            match generator.generate(&meeting, &transcript, &summary) {
+                Ok(path) => {
+                    println!("Notes file: {}", path.display());
+                    let mut updated = meeting.clone();
+                    updated.notes_path = Some(path);
+                    let _ = db.update_meeting(&updated);
+                }
+                Err(e) => {
+                    eprintln!("Failed to save notes file: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Error generating summary: {}", e);
+        }
+    }
+
     Ok(())
 }
 

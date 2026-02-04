@@ -1,8 +1,7 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-/// Current schema version
-pub const SCHEMA_VERSION: i32 = 1;
+pub const SCHEMA_VERSION: i32 = 2;
 
 /// Run all migrations
 pub fn run_migrations(conn: &Connection) -> Result<()> {
@@ -10,6 +9,9 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
 
     if version < 1 {
         migrate_v1(conn)?;
+    }
+    if version < 2 {
+        migrate_v2(conn)?;
     }
 
     Ok(())
@@ -73,5 +75,25 @@ fn migrate_v1(conn: &Connection) -> Result<()> {
     )?;
 
     set_schema_version(conn, 1)?;
+    Ok(())
+}
+
+fn migrate_v2(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        DROP TABLE IF EXISTS summaries;
+        
+        CREATE TABLE summaries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_id TEXT NOT NULL UNIQUE REFERENCES meetings(id) ON DELETE CASCADE,
+            markdown TEXT NOT NULL,
+            generated_at TEXT NOT NULL
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_summaries_meeting ON summaries(meeting_id);
+        ",
+    )?;
+
+    set_schema_version(conn, 2)?;
     Ok(())
 }

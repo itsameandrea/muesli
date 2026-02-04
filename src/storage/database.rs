@@ -216,6 +216,40 @@ impl Database {
         )?;
         Ok(())
     }
+
+    pub fn insert_summary(
+        &self,
+        meeting_id: &MeetingId,
+        summary: &crate::llm::SummaryResult,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+
+        self.conn.execute(
+            "INSERT OR REPLACE INTO summaries (meeting_id, summary, action_items, key_decisions, generated_at)
+             VALUES (?1, ?2, '[]', '[]', ?3)",
+            rusqlite::params![&meeting_id.0, &summary.markdown, &now],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_summary(&self, meeting_id: &MeetingId) -> Result<Option<crate::llm::SummaryResult>> {
+        let result = self
+            .conn
+            .query_row(
+                "SELECT summary FROM summaries WHERE meeting_id = ?1",
+                [&meeting_id.0],
+                |row| {
+                    let markdown: String = row.get(0)?;
+                    Ok(markdown)
+                },
+            )
+            .optional()?;
+
+        match result {
+            Some(markdown) => Ok(Some(crate::llm::SummaryResult { markdown })),
+            None => Ok(None),
+        }
+    }
 }
 
 fn parse_status(s: &str) -> MeetingStatus {

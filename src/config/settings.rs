@@ -98,19 +98,16 @@ impl Default for TranscriptionConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
-    /// Summarization engine: "none", "local", "claude", "openai"
     #[serde(default = "default_llm_engine")]
     pub engine: String,
-    /// Claude API key
     pub claude_api_key: Option<String>,
-    /// OpenAI API key (for GPT)
     pub openai_api_key: Option<String>,
-    /// Local LLM model path
-    pub local_model_path: Option<PathBuf>,
-    /// Claude model to use
+    #[serde(default)]
+    pub local_lms_path: String,
+    #[serde(default = "default_local_model")]
+    pub local_model: String,
     #[serde(default = "default_claude_model")]
     pub claude_model: String,
-    /// OpenAI model to use
     #[serde(default = "default_openai_model")]
     pub openai_model: String,
 }
@@ -121,7 +118,8 @@ impl Default for LlmConfig {
             engine: "none".to_string(),
             claude_api_key: None,
             openai_api_key: None,
-            local_model_path: None,
+            local_lms_path: String::new(),
+            local_model: String::new(),
             claude_model: "claude-sonnet-4-20250514".to_string(),
             openai_model: "gpt-4o".to_string(),
         }
@@ -213,6 +211,10 @@ fn default_llm_engine() -> String {
     "none".to_string()
 }
 
+fn default_local_model() -> String {
+    String::new()
+}
+
 fn default_claude_model() -> String {
     "claude-sonnet-4-20250514".to_string()
 }
@@ -266,6 +268,7 @@ mod tests {
         let llm = LlmConfig::default();
         assert_eq!(llm.engine, "none");
         assert_eq!(llm.claude_model, "claude-sonnet-4-20250514");
+        assert!(llm.local_lms_path.is_empty());
     }
 
     #[test]

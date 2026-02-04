@@ -44,10 +44,16 @@ pub enum Commands {
         limit: usize,
     },
 
-    /// View meeting notes
-    View {
-        /// Meeting ID to view
-        id: String,
+    /// View meeting notes and summary
+    Notes {
+        /// Meeting ID (interactive selection if omitted)
+        id: Option<String>,
+    },
+
+    /// View meeting transcript
+    Transcript {
+        /// Meeting ID (interactive selection if omitted)
+        id: Option<String>,
     },
 
     /// Transcribe a meeting recording
@@ -90,6 +96,12 @@ pub enum Commands {
     Diarization {
         #[command(subcommand)]
         action: DiarizationCommands,
+    },
+
+    /// Generate AI summary for a meeting
+    Summarize {
+        /// Meeting ID to summarize
+        id: String,
     },
 }
 
