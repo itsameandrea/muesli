@@ -225,8 +225,8 @@ impl Database {
         let now = chrono::Utc::now().to_rfc3339();
 
         self.conn.execute(
-            "INSERT OR REPLACE INTO summaries (meeting_id, summary, action_items, key_decisions, generated_at)
-             VALUES (?1, ?2, '[]', '[]', ?3)",
+            "INSERT OR REPLACE INTO summaries (meeting_id, meeting_notes, generated_at)
+             VALUES (?1, ?2, ?3)",
             rusqlite::params![&meeting_id.0, &summary.markdown, &now],
         )?;
         Ok(())
@@ -236,7 +236,7 @@ impl Database {
         let result = self
             .conn
             .query_row(
-                "SELECT summary FROM summaries WHERE meeting_id = ?1",
+                "SELECT meeting_notes FROM summaries WHERE meeting_id = ?1",
                 [&meeting_id.0],
                 |row| {
                     let markdown: String = row.get(0)?;

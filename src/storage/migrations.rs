@@ -1,9 +1,8 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i32 = 2;
+pub const SCHEMA_VERSION: i32 = 3;
 
-/// Run all migrations
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     let version = get_schema_version(conn)?;
 
@@ -12,6 +11,9 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     }
     if version < 2 {
         migrate_v2(conn)?;
+    }
+    if version < 3 {
+        migrate_v3(conn)?;
     }
 
     Ok(())
@@ -81,12 +83,10 @@ fn migrate_v1(conn: &Connection) -> Result<()> {
 fn migrate_v2(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "
-        DROP TABLE IF EXISTS summaries;
-        
-        CREATE TABLE summaries (
+        CREATE TABLE IF NOT EXISTS summaries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             meeting_id TEXT NOT NULL UNIQUE REFERENCES meetings(id) ON DELETE CASCADE,
-            markdown TEXT NOT NULL,
+            meeting_notes TEXT NOT NULL,
             generated_at TEXT NOT NULL
         );
         
@@ -95,5 +95,33 @@ fn migrate_v2(conn: &Connection) -> Result<()> {
     )?;
 
     set_schema_version(conn, 2)?;
+    Ok(())
+}
+
+fn migrate_v3(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS summaries_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_id TEXT NOT NULL UNIQUE REFERENCES meetings(id) ON DELETE CASCADE,
+            meeting_notes TEXT NOT NULL,
+            generated_at TEXT NOT NULL
+        );
+        
+        INSERT OR IGNORE INTO summaries_new (meeting_id, meeting_notes, generated_at)
+        SELECT meeting_id, 
+               COALESCE(summary, markdown, meeting_notes, ''),
+               generated_at 
+        FROM summaries;
+        
+        DROP TABLE summaries;
+        
+        ALTER TABLE summaries_new RENAME TO summaries;
+        
+        CREATE INDEX IF NOT EXISTS idx_summaries_meeting ON summaries(meeting_id);
+        ",
+    )?;
+
+    set_schema_version(conn, 3)?;
     Ok(())
 }
