@@ -18,6 +18,7 @@ pub enum MuesliError {
     #[error("Whisper model not found: {0}")]
     WhisperModelNotFound(PathBuf),
 
+    #[allow(dead_code)]
     #[error("Storage error: {0}")]
     Storage(String),
 
@@ -27,9 +28,11 @@ pub enum MuesliError {
     #[error("Config error: {0}")]
     Config(String),
 
+    #[allow(dead_code)]
     #[error("Config file not found: {0}")]
     ConfigNotFound(PathBuf),
 
+    #[allow(dead_code)]
     #[error("Invalid config: {0}")]
     InvalidConfig(String),
 
@@ -63,9 +66,11 @@ pub enum MuesliError {
     #[error("Meeting not found: {0}")]
     MeetingNotFound(String),
 
+    #[allow(dead_code)]
     #[error("Already recording")]
     AlreadyRecording,
 
+    #[allow(dead_code)]
     #[error("Not recording")]
     NotRecording,
 }

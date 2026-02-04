@@ -24,6 +24,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, broadcast, Mutex};
 
+#[allow(dead_code)]
 pub struct DaemonState {
     pub recording: bool,
     pub current_meeting: Option<Meeting>,

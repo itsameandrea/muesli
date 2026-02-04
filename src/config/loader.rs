@@ -86,7 +86,7 @@ pub fn ensure_directories() -> Result<()> {
     Ok(())
 }
 
-/// Get effective config with environment overrides
+#[allow(dead_code)]
 pub fn load_config_with_env() -> Result<MuesliConfig> {
     let mut config = load_config()?;
 

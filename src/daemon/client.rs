@@ -45,6 +45,7 @@ impl DaemonClient {
     }
 }
 
+#[allow(dead_code)]
 pub async fn is_daemon_running() -> bool {
     DaemonClient::ping().await.unwrap_or(false)
 }

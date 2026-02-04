@@ -24,6 +24,7 @@ impl Database {
         Ok(Self { conn })
     }
 
+    #[allow(dead_code)]
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         migrations::run_migrations(&conn)?;
@@ -117,6 +118,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn delete_meeting(&self, id: &MeetingId) -> Result<()> {
         self.conn
             .execute("DELETE FROM meetings WHERE id = ?1", [&id.0])?;

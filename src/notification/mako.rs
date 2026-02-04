@@ -44,7 +44,7 @@ pub fn notify_recording_stopped(meeting_title: &str, duration_mins: u64) -> Resu
     Ok(())
 }
 
-/// Show notification when notes are ready
+#[allow(dead_code)]
 pub fn notify_notes_ready(meeting_title: &str, notes_path: &str) -> Result<()> {
     Notification::new()
         .summary("Meeting Notes Ready")
@@ -57,7 +57,7 @@ pub fn notify_notes_ready(meeting_title: &str, notes_path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Show error notification
+#[allow(dead_code)]
 pub fn notify_error(title: &str, message: &str) -> Result<()> {
     Notification::new()
         .summary(title)
