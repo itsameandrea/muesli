@@ -99,48 +99,124 @@ impl HyprlandMonitor {
     }
 
     async fn poll_active_window(event_tx: mpsc::Sender<DetectionEvent>, interval_secs: u64) {
-        let mut last_window: Option<String> = None;
+        let mut last_meeting_key: Option<String> = None;
         tracing::info!("Starting window polling with {}s interval", interval_secs);
+
+        if let Err(e) = Self::scan_all_windows(&event_tx, &mut last_meeting_key).await {
+            tracing::error!("Initial window scan failed: {}", e);
+        }
 
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
-            tracing::trace!("Polling active window...");
+            tracing::debug!("Polling all windows for meetings...");
 
-            match Self::get_active_window() {
-                Ok(Some(window)) => {
-                    let window_key = format!("{}:{}", window.class, window.title);
-
-                    if last_window.as_ref() != Some(&window_key) {
-                        tracing::debug!("Poll detected window change: {}", window_key);
-                        last_window = Some(window_key);
-
-                        let event = DetectionEvent::WindowChanged { window };
-                        if let Err(e) = event_tx.send(event).await {
-                            tracing::warn!("Failed to send polled window event: {}", e);
-                            break;
-                        }
-                    }
-                }
-                Ok(None) => {
-                    tracing::trace!("No active window");
-                    last_window = None;
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to poll active window: {}", e);
-                }
+            if let Err(e) = Self::scan_all_windows(&event_tx, &mut last_meeting_key).await {
+                tracing::warn!("Window scan failed: {}", e);
             }
         }
+    }
+
+    async fn scan_all_windows(
+        event_tx: &mpsc::Sender<DetectionEvent>,
+        last_meeting_key: &mut Option<String>,
+    ) -> Result<bool> {
+        let windows = list_all_windows()?;
+        tracing::debug!("Scanning {} windows for meeting apps", windows.len());
+
+        for window in &windows {
+            if let Some(app) = crate::detection::patterns::detect_meeting_app(&window.class, &window.title) {
+                let window_key = format!("{}:{}", window.class, window.title);
+
+                if last_meeting_key.as_ref() != Some(&window_key) {
+                    tracing::info!("Poll detected meeting window ({}): {} - {}", app, window.class, window.title);
+                    *last_meeting_key = Some(window_key);
+
+                    let event = DetectionEvent::WindowChanged { window: window.clone() };
+                    if let Err(e) = event_tx.send(event).await {
+                        tracing::warn!("Failed to send polled window event: {}", e);
+                    }
+                }
+                return Ok(true);
+            }
+        }
+
+        if last_meeting_key.is_some() {
+            tracing::debug!("No meeting windows found, clearing last meeting");
+            *last_meeting_key = None;
+        }
+
+        Ok(false)
     }
 }
 
 pub fn is_hyprland_running() -> bool {
+    ensure_hyprland_env();
     std::env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok()
 }
 
 pub fn get_socket_path() -> Option<String> {
+    ensure_hyprland_env();
     let sig = std::env::var("HYPRLAND_INSTANCE_SIGNATURE").ok()?;
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
     Some(format!("{}/hypr/{}/.socket.sock", runtime_dir, sig))
+}
+
+fn ensure_hyprland_env() {
+    if let Ok(current_sig) = std::env::var("HYPRLAND_INSTANCE_SIGNATURE") {
+        let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
+        let socket_path = format!("{}/hypr/{}/.socket.sock", runtime_dir, current_sig);
+        if std::path::Path::new(&socket_path).exists() {
+            return;
+        }
+        tracing::warn!("Current HYPRLAND_INSTANCE_SIGNATURE points to non-existent socket, scanning for active session...");
+    }
+
+    if let Some(sig) = find_active_hyprland_session() {
+        tracing::info!("Found active Hyprland session: {}", sig);
+        std::env::set_var("HYPRLAND_INSTANCE_SIGNATURE", sig);
+    }
+}
+
+fn find_active_hyprland_session() -> Option<String> {
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
+    let hypr_dir = format!("{}/hypr", runtime_dir);
+    
+    let entries = match std::fs::read_dir(&hypr_dir) {
+        Ok(e) => e,
+        Err(_) => return None,
+    };
+
+    let mut best_session: Option<(String, std::time::SystemTime)> = None;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let socket_path = path.join(".socket.sock");
+        if !socket_path.exists() {
+            continue;
+        }
+
+        let log_path = path.join("hyprland.log");
+        let modified = log_path.metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        tracing::debug!("Found Hyprland session: {} (log modified: {:?})", dir_name, modified);
+
+        match &best_session {
+            None => best_session = Some((dir_name, modified)),
+            Some((_, best_time)) if modified > *best_time => {
+                best_session = Some((dir_name, modified));
+            }
+            _ => {}
+        }
+    }
+
+    best_session.map(|(sig, _)| sig)
 }
 
 pub fn list_all_windows() -> Result<Vec<WindowInfo>> {
