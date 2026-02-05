@@ -4,14 +4,14 @@ AI-powered meeting note-taker for Linux/Hyprland that automatically detects, rec
 
 ## Overview
 
-muesli is a background daemon that monitors your Hyprland window manager for meeting applications (Zoom, Google Meet, Microsoft Teams, etc.), automatically records audio from both your microphone and system audio, transcribes the conversation using Whisper, and generates structured meeting notes with AI summarization.
+muesli is a background daemon that monitors your Hyprland window manager for meeting applications (primarily Google Meet, with experimental support for Zoom, Teams, and others), automatically records audio from both your microphone and system audio, transcribes the conversation using local AI models (Whisper or Parakeet), and generates structured meeting notes with AI summarization.
 
 ## Features
 
 - **Automatic Meeting Detection**: Monitors Hyprland windows to detect when you join a meeting
 - **Dual Audio Capture**: Records both microphone input and system audio (loopback) via PipeWire
 - **Local Transcription**: Uses Whisper.cpp for privacy-focused, offline speech-to-text
-- **Hosted API Support**: Optional integration with Deepgram or OpenAI Whisper API
+- **Hosted API Support** *(Experimental)*: Optional integration with Deepgram or OpenAI Whisper API (untested)
 - **AI Summarization**: Generate structured notes with Claude or GPT (optional)
 - **SQLite Storage**: Persistent storage of meetings, transcripts, and metadata
 - **Desktop Notifications**: Real-time status updates via Mako/notify-rust
@@ -83,7 +83,7 @@ The `muesli setup` command provides an interactive wizard that configures everyt
 | **Diarization** | Speaker identification model (sortformer-v2) |
 | **Streaming** | Optional Nemotron model for real-time transcription |
 | **LLM** | Auto-detects LM Studio and lists available models for meeting summaries |
-| **Meeting Detection** | Auto-detect Zoom/Meet/Teams windows and prompt to record |
+| **Meeting Detection** | Auto-detect meeting windows (Google Meet tested, others experimental) |
 | **Audio Cues** | Play sounds when recording starts/stops |
 | **Systemd Service** | Install user service for auto-start on login |
 
@@ -104,15 +104,13 @@ cp target/release/muesli ~/.local/bin/
 mkdir -p ~/.config/muesli
 mkdir -p ~/.local/share/muesli/{recordings,notes,models}
 
-# Initialize configuration
-muesli config init
+# Run setup wizard (creates config and downloads models)
+muesli setup
 
-# Download transcription model (choose one)
-muesli models download base           # Whisper base model
-muesli parakeet download parakeet-v3-int8  # Parakeet (faster)
-
-# Download diarization model (for speaker identification)
-muesli diarization download sortformer-v2
+# Or manually download models:
+muesli models whisper download base              # Whisper base model
+muesli models parakeet download parakeet-v3-int8 # Parakeet (faster)
+muesli models diarization download sortformer-v2 # Speaker identification
 
 # Install systemd service
 mkdir -p ~/.config/systemd/user
@@ -173,12 +171,12 @@ status_file = "..."          # Optional, defaults to $XDG_RUNTIME_DIR/muesli/way
 
 ### Transcription Engines
 
-| Engine | Speed | Quality | Offline | Notes |
-|--------|-------|---------|---------|-------|
-| **parakeet** | 20-30x faster | Excellent | Yes | ONNX-based, recommended |
-| **whisper** | Baseline | Excellent | Yes | Original whisper.cpp |
-| **deepgram** | Fast | Excellent | No | Requires API key |
-| **openai** | Fast | Excellent | No | Requires API key |
+| Engine | Speed | Quality | Offline | Status | Notes |
+|--------|-------|---------|---------|--------|-------|
+| **parakeet** | 20-30x faster | Excellent | Yes | ✅ Tested | ONNX-based, recommended |
+| **whisper** | Baseline | Excellent | Yes | ✅ Tested | Original whisper.cpp |
+| **deepgram** | Fast | Excellent | No | ⚠️ Experimental | Requires API key, untested |
+| **openai** | Fast | Excellent | No | ⚠️ Experimental | Requires API key, untested |
 
 ### LLM Engines
 
@@ -211,12 +209,6 @@ muesli config show
 
 # Edit configuration file
 muesli config edit
-
-# Print config file path
-muesli config path
-
-# Reinitialize default configuration
-muesli config init
 ```
 
 ## Quick Start
@@ -273,13 +265,7 @@ muesli list --limit 10
 View meeting notes:
 
 ```bash
-muesli view <meeting-id>
-```
-
-Transcribe a recording:
-
-```bash
-muesli transcribe <meeting-id>
+muesli notes <meeting-id>
 ```
 
 ## CLI Commands Reference
@@ -300,9 +286,6 @@ muesli start [--title "Meeting Title"]
 # Stop current recording
 muesli stop
 
-# Toggle recording on/off
-muesli toggle
-
 # Show recording status
 muesli status
 ```
@@ -313,16 +296,14 @@ muesli status
 # List recorded meetings
 muesli list [--limit 10]
 
-# View meeting notes and transcript
-muesli notes <meeting-id>
-muesli transcript <meeting-id>
+# View meeting notes and summary
+muesli notes [meeting-id]
 
-# Transcribe a meeting (if not already transcribed)
-muesli transcribe <meeting-id> [--hosted]
-
-# Generate AI summary of a meeting
-muesli summarize <meeting-id>
+# View meeting transcript
+muesli transcript [meeting-id]
 ```
+
+Note: Transcription and summarization happen automatically when recording stops.
 
 ### Daemon Control
 
@@ -344,44 +325,32 @@ muesli config show
 
 # Edit configuration file
 muesli config edit
-
-# Print config file path
-muesli config path
-
-# Initialize default configuration
-muesli config init
 ```
 
 ### Model Management
 
 ```bash
 # Whisper models (whisper.cpp)
-muesli models list
-muesli models download <tiny|base|small|medium|large|large-v3-turbo>
-muesli models delete <model-name>
+muesli models whisper list
+muesli models whisper download <tiny|base|small|medium|large|large-v3-turbo>
+muesli models whisper delete <model-name>
 
 # Parakeet models (ONNX, 20-30x faster)
-muesli parakeet list
-muesli parakeet download <parakeet-v3|parakeet-v3-int8|nemotron-streaming>
-muesli parakeet delete <model-name>
+muesli models parakeet list
+muesli models parakeet download <parakeet-v3|parakeet-v3-int8|nemotron-streaming>
+muesli models parakeet delete <model-name>
 
 # Diarization models (speaker identification)
-muesli diarization list
-muesli diarization download sortformer-v2
-muesli diarization delete sortformer-v2
+muesli models diarization list
+muesli models diarization download sortformer-v2
+muesli models diarization delete sortformer-v2
 ```
 
-### Audio Testing
+### Audio Devices
 
 ```bash
 # List available audio devices
 muesli audio list-devices
-
-# Test microphone capture (3 seconds)
-muesli audio test-mic [--duration 3]
-
-# Test loopback capture (3 seconds)
-muesli audio test-loopback [--duration 3]
 ```
 
 ### Waybar Integration
@@ -419,7 +388,7 @@ enabled = true
       "recording": "󰻂"
     },
     "tooltip": true,
-    "on-click": "muesli toggle"
+    "on-click": "muesli start || muesli stop"
   }
 }
 ```
@@ -500,16 +469,16 @@ hyprctl reload
 
 muesli automatically detects the following meeting applications:
 
-- Zoom
-- Google Meet (Chrome/Chromium/Firefox)
-- Microsoft Teams
-- Slack Huddles
-- Discord
-- Jitsi Meet
-- WebEx
-- GoToMeeting
+| Application | Status | Notes |
+|-------------|--------|-------|
+| **Google Meet** | ✅ Tested | Chrome, Chromium, Firefox, Brave, Edge, Zen browsers |
+| Zoom | ⚠️ Untested | Detection implemented but not verified |
+| Microsoft Teams | ⚠️ Untested | Detection implemented but not verified |
+| Slack Huddles | ⚠️ Untested | Only detects huddles/calls, not text channels |
+| Discord | ⚠️ Untested | Only detects voice/stage channels, not text |
+| WebEx | ⚠️ Untested | Detection implemented but not verified |
 
-Detection is based on window title patterns in Hyprland. You can customize detection patterns in the source code at `src/detection/patterns.rs`.
+Detection is based on window class and title patterns in Hyprland. You can customize detection patterns in the source code at `src/detection/patterns.rs`.
 
 ## Troubleshooting
 
@@ -522,33 +491,26 @@ If audio capture fails:
    muesli audio list-devices
    ```
 
-2. Test microphone:
-   ```bash
-   muesli audio test-mic --duration 5
-   ```
-
-3. Test system audio:
-   ```bash
-   muesli audio test-loopback --duration 5
-   ```
-
-4. Update config with specific device names:
+2. Update config with specific device names:
    ```bash
    muesli config edit
    ```
 
-### Whisper Model Issues
+### Transcription Model Issues
 
 If transcription fails:
 
 1. Check available models:
    ```bash
-   muesli models list
+   muesli models whisper list
+   muesli models parakeet list
    ```
 
 2. Download missing model:
    ```bash
-   muesli models download base
+   muesli models whisper download base
+   # or
+   muesli models parakeet download parakeet-v3-int8
    ```
 
 3. Verify model path in config:

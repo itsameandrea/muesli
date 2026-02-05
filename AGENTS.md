@@ -264,35 +264,32 @@ muesli uninstall
 # Recording
 muesli start [--title "Title"]
 muesli stop
-muesli toggle
 muesli status
 
 # Meeting management
 muesli list [--limit N]
 muesli notes <id>
 muesli transcript <id>
-muesli transcribe <id> [--hosted]
-muesli summarize <id>
 
 # Daemon
 muesli daemon
 
 # Configuration
-muesli config show|edit|path|init
+muesli config show|edit
 
 # Models - Whisper (whisper.cpp)
-muesli models list|download|delete <model>
+muesli models whisper list|download|delete <model>
 
 # Models - Parakeet (ONNX, 20-30x faster)
-muesli parakeet list|download|delete <model>
+muesli models parakeet list|download|delete <model>
 # Models: parakeet-v3, parakeet-v3-int8, nemotron-streaming
 
 # Models - Diarization (speaker identification)
-muesli diarization list|download|delete <model>
+muesli models diarization list|download|delete <model>
 # Models: sortformer-v2
 
-# Audio testing
-muesli audio list-devices|test-mic|test-loopback [--duration N]
+# Audio devices
+muesli audio list-devices
 
 # Waybar integration
 muesli waybar              # Output JSON status for Waybar custom module

@@ -31,9 +31,6 @@ pub enum Commands {
     /// Stop recording and process notes
     Stop,
 
-    /// Toggle recording on/off
-    Toggle,
-
     /// Show current recording status
     Status,
 
@@ -56,15 +53,6 @@ pub enum Commands {
         id: Option<String>,
     },
 
-    /// Transcribe a meeting recording
-    Transcribe {
-        /// Meeting ID to transcribe
-        id: String,
-        /// Use hosted API instead of local Whisper
-        #[arg(long)]
-        hosted: bool,
-    },
-
     /// Run daemon mode (background meeting detection)
     Daemon,
 
@@ -74,34 +62,16 @@ pub enum Commands {
         action: ConfigCommands,
     },
 
-    /// Whisper model management
+    /// Model management
     Models {
         #[command(subcommand)]
-        action: ModelCommands,
-    },
-
-    /// Parakeet model management (ONNX-based, faster)
-    Parakeet {
-        #[command(subcommand)]
-        action: ParakeetCommands,
+        engine: ModelEngine,
     },
 
     /// Audio device management
     Audio {
         #[command(subcommand)]
         action: AudioCommands,
-    },
-
-    /// Speaker diarization model management
-    Diarization {
-        #[command(subcommand)]
-        action: DiarizationCommands,
-    },
-
-    /// Generate AI summary for a meeting
-    Summarize {
-        /// Meeting ID to summarize
-        id: String,
     },
 
     /// Interactive setup wizard for first-time configuration
@@ -120,34 +90,33 @@ pub enum ConfigCommands {
     Show,
     /// Open config file in editor
     Edit,
-    /// Print config file path
-    Path,
-    /// Initialize default configuration
-    Init,
 }
 
 #[derive(Subcommand)]
-pub enum ModelCommands {
-    /// List available Whisper models
-    List,
-    /// Download a Whisper model
-    Download {
-        /// Model name: tiny, base, small, medium, large, large-v3-turbo, distil-large-v3
-        model: String,
+pub enum ModelEngine {
+    /// Whisper models (whisper.cpp)
+    Whisper {
+        #[command(subcommand)]
+        action: ModelAction,
     },
-    /// Delete a downloaded model
-    Delete { model: String },
+    /// Parakeet models (ONNX, 20-30x faster)
+    Parakeet {
+        #[command(subcommand)]
+        action: ModelAction,
+    },
+    /// Speaker diarization models
+    Diarization {
+        #[command(subcommand)]
+        action: ModelAction,
+    },
 }
 
 #[derive(Subcommand)]
-pub enum ParakeetCommands {
-    /// List available Parakeet models
+pub enum ModelAction {
+    /// List available models
     List,
-    /// Download a Parakeet model
-    Download {
-        /// Model name: parakeet-v3, parakeet-v3-int8, nemotron-streaming
-        model: String,
-    },
+    /// Download a model
+    Download { model: String },
     /// Delete a downloaded model
     Delete { model: String },
 }
@@ -157,29 +126,4 @@ pub enum AudioCommands {
     /// List available audio devices
     #[command(name = "list-devices")]
     ListDevices,
-    /// Test microphone capture
-    #[command(name = "test-mic")]
-    TestMic {
-        #[arg(short, long, default_value = "3")]
-        duration: u64,
-    },
-    /// Test loopback capture
-    #[command(name = "test-loopback")]
-    TestLoopback {
-        #[arg(short, long, default_value = "3")]
-        duration: u64,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum DiarizationCommands {
-    /// List available diarization models
-    List,
-    /// Download a diarization model
-    Download {
-        /// Model name: sortformer-v2
-        model: String,
-    },
-    /// Delete a downloaded model
-    Delete { model: String },
 }
