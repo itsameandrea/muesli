@@ -26,13 +26,9 @@ struct ClaudeContent {
     text: String,
 }
 
-pub async fn summarize_with_claude(
-    api_key: &str,
-    model: &str,
-    prompt: &str,
-) -> Result<String> {
+pub async fn summarize_with_claude(api_key: &str, model: &str, prompt: &str) -> Result<String> {
     let client = reqwest::Client::new();
-    
+
     let request = ClaudeRequest {
         model: model.to_string(),
         max_tokens: 4096,
@@ -84,7 +80,7 @@ mod tests {
                 content: "test".to_string(),
             }],
         };
-        
+
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("claude-sonnet-4-20250514"));
         assert!(json.contains("test"));

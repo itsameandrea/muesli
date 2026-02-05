@@ -52,7 +52,8 @@ src/
 ├── notes/            # Markdown note generation
 ├── llm/              # AI summarization (Claude, OpenAI, local)
 ├── storage/          # SQLite database
-└── notification/     # Desktop notifications (Mako)
+├── notification/     # Desktop notifications (Mako), audio cues (rodio)
+└── waybar/           # Waybar status bar integration
 ```
 
 ## Code Style Guidelines
@@ -205,6 +206,7 @@ pub struct Cli {
 | `thiserror` / `anyhow` | Error handling |
 | `tracing` | Logging |
 | `cpal` | Audio capture |
+| `rodio` | Audio playback (notification sounds) |
 | `whisper-rs` | Local speech-to-text |
 | `rusqlite` | SQLite database |
 | `reqwest` | HTTP client for APIs |
@@ -291,6 +293,9 @@ muesli diarization list|download|delete <model>
 
 # Audio testing
 muesli audio list-devices|test-mic|test-loopback [--duration N]
+
+# Waybar integration
+muesli waybar              # Output JSON status for Waybar custom module
 ```
 
 ## Configuration Structure
@@ -329,6 +334,16 @@ recordings_dir = "..."       # Optional, defaults to ~/.local/share/muesli/recor
 [daemon]
 socket_path = "..."          # Optional
 log_level = "info"
+
+[audio_cues]
+enabled = false              # Play sounds on recording start/stop
+volume = 0.5                 # Volume level (0.0 - 1.0)
+start_sound = "..."          # Optional: custom WAV/OGG/MP3 for start
+stop_sound = "..."           # Optional: custom WAV/OGG/MP3 for stop
+
+[waybar]
+enabled = false              # Write status to file for Waybar integration
+status_file = "..."          # Optional, defaults to $XDG_RUNTIME_DIR/muesli/waybar.json
 ```
 
 ### TranscriptionConfig.effective_model()

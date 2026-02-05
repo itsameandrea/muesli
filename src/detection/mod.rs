@@ -2,10 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod detector;
 pub mod hyprland;
 pub mod patterns;
-pub mod detector;
-
 
 /// Detected meeting application
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,17 +43,8 @@ pub struct WindowInfo {
 /// Meeting detection event
 #[derive(Debug, Clone)]
 pub enum DetectionEvent {
-    MeetingDetected {
-        app: MeetingApp,
-        window: WindowInfo,
-    },
-    MeetingEnded {
-        app: MeetingApp,
-    },
-    WindowChanged {
-        window: WindowInfo,
-    },
-    MeetingWindowClosed {
-        app: MeetingApp,
-    },
+    MeetingDetected { app: MeetingApp, window: WindowInfo },
+    MeetingEnded { app: MeetingApp },
+    WindowChanged { window: WindowInfo },
+    MeetingWindowClosed { app: MeetingApp },
 }

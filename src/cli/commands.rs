@@ -109,6 +109,9 @@ pub enum Commands {
 
     /// Uninstall muesli completely
     Uninstall,
+
+    /// Output status in Waybar JSON format (for custom module integration)
+    Waybar,
 }
 
 #[derive(Subcommand)]

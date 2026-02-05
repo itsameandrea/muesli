@@ -1,10 +1,9 @@
 use crate::audio::capture::MicCapture;
 use crate::audio::loopback::LoopbackCapture;
-use cpal::Stream;
 use crate::audio::mixer::mix_streams;
 use crate::audio::recorder::WavRecorder;
 use crate::audio::AudioChunk;
-use crate::config::loader::{database_path, models_dir, recordings_dir, socket_path};
+use crate::config::loader::{database_path, load_config, models_dir, recordings_dir, socket_path};
 use crate::daemon::protocol::{DaemonRequest, DaemonResponse, DaemonStatus};
 use crate::detection::hyprland::{is_hyprland_running, HyprlandMonitor};
 use crate::detection::{DetectionEvent, MeetingApp};
@@ -15,6 +14,8 @@ use crate::storage::Meeting;
 use crate::transcription::parakeet_models::{ParakeetModel, ParakeetModelManager};
 use crate::transcription::streaming::StreamingTranscriber;
 use crate::transcription::TranscriptSegment;
+use crate::waybar::{update_waybar_status, WaybarStatus};
+use cpal::Stream;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,7 +23,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{mpsc, broadcast, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 
 #[allow(dead_code)]
 pub struct DaemonState {
@@ -78,12 +79,12 @@ pub async fn run_daemon() -> Result<()> {
     let shutdown = Arc::new(AtomicBool::new(false));
 
     let (detection_tx, mut detection_rx) = mpsc::channel::<DetectionEvent>(100);
-    
+
     {
         let mut s = state.lock().await;
         s.detection_tx = Some(detection_tx.clone());
     }
-    
+
     let state_for_detection = state.clone();
     let detection_tx_for_handler = detection_tx.clone();
 
@@ -113,7 +114,11 @@ pub async fn run_daemon() -> Result<()> {
                         tokio::spawn(async move {
                             let title_for_prompt = window_title.clone();
                             let response = tokio::task::spawn_blocking(move || {
-                                notification::prompt_meeting_detected(app, &title_for_prompt, timeout)
+                                notification::prompt_meeting_detected(
+                                    app,
+                                    &title_for_prompt,
+                                    timeout,
+                                )
                             })
                             .await;
 
@@ -126,11 +131,16 @@ pub async fn run_daemon() -> Result<()> {
                                         match start_recording_internal(&mut state, title).await {
                                             Ok(id) => {
                                                 tracing::info!("Recording started: {}", id);
-                                                state.meeting_monitor_running = Some(
-                                                    start_meeting_window_monitor(app, tx_for_monitor)
-                                                );
+                                                state.meeting_monitor_running =
+                                                    Some(start_meeting_window_monitor(
+                                                        app,
+                                                        tx_for_monitor,
+                                                    ));
                                             }
-                                            Err(e) => tracing::error!("Failed to auto-start recording: {}", e),
+                                            Err(e) => tracing::error!(
+                                                "Failed to auto-start recording: {}",
+                                                e
+                                            ),
                                         }
                                     } else {
                                         tracing::info!("Already recording, skipping");
@@ -158,9 +168,16 @@ pub async fn run_daemon() -> Result<()> {
                     }
                 }
                 DetectionEvent::WindowChanged { window } => {
-                    tracing::debug!("Window changed: class={}, title={}", window.class, window.title);
-                    let detected_app = crate::detection::patterns::detect_meeting_app(&window.class, &window.title);
-                    
+                    tracing::debug!(
+                        "Window changed: class={}, title={}",
+                        window.class,
+                        window.title
+                    );
+                    let detected_app = crate::detection::patterns::detect_meeting_app(
+                        &window.class,
+                        &window.title,
+                    );
+
                     let (current_detected, is_recording, prompt_active) = {
                         let state = state_for_detection.lock().await;
                         (state.meeting_detected, state.recording, state.prompt_active)
@@ -168,11 +185,11 @@ pub async fn run_daemon() -> Result<()> {
 
                     if let Some(app) = detected_app {
                         tracing::debug!("Meeting app detected: {}", app);
-                        
+
                         if is_recording || prompt_active {
                             continue;
                         }
-                        
+
                         if current_detected != Some(app) {
                             tracing::info!("New meeting detected ({}), showing prompt", app);
                             {
@@ -198,23 +215,33 @@ pub async fn run_daemon() -> Result<()> {
                                 tokio::spawn(async move {
                                     let title_for_prompt = window_title.clone();
                                     let response = tokio::task::spawn_blocking(move || {
-                                        notification::prompt_meeting_detected(app, &title_for_prompt, timeout)
+                                        notification::prompt_meeting_detected(
+                                            app,
+                                            &title_for_prompt,
+                                            timeout,
+                                        )
                                     })
                                     .await;
 
                                     let mut state = state_clone.lock().await;
                                     state.prompt_active = false;
-                                    
+
                                     if let Ok(notification::PromptResponse::Record) = response {
                                         if !state.recording {
                                             let title = "Untitled Meeting".to_string();
-                                            match start_recording_internal(&mut state, title).await {
+                                            match start_recording_internal(&mut state, title).await
+                                            {
                                                 Ok(_) => {
-                                                    state.meeting_monitor_running = Some(
-                                                        start_meeting_window_monitor(app, tx_for_monitor)
-                                                    );
+                                                    state.meeting_monitor_running =
+                                                        Some(start_meeting_window_monitor(
+                                                            app,
+                                                            tx_for_monitor,
+                                                        ));
                                                 }
-                                                Err(e) => tracing::error!("Failed to auto-start recording: {}", e),
+                                                Err(e) => tracing::error!(
+                                                    "Failed to auto-start recording: {}",
+                                                    e
+                                                ),
                                             }
                                         }
                                     }
@@ -226,17 +253,22 @@ pub async fn run_daemon() -> Result<()> {
                     }
                 }
                 DetectionEvent::MeetingWindowClosed { app } => {
-                    tracing::info!("Meeting window closed ({}), checking if should stop recording", app);
+                    tracing::info!(
+                        "Meeting window closed ({}), checking if should stop recording",
+                        app
+                    );
                     let mut state = state_for_detection.lock().await;
                     if state.recording && state.meeting_detected == Some(app) {
                         tracing::info!("Auto-stopping recording due to meeting window closure");
                         if let Some(running) = state.meeting_monitor_running.take() {
                             running.store(false, Ordering::Relaxed);
                         }
-                        let meeting_id = state.current_meeting.as_ref()
+                        let meeting_id = state
+                            .current_meeting
+                            .as_ref()
                             .map(|m| m.id.to_string())
                             .unwrap_or_default();
-                        
+
                         let audio_path = state.audio_path.clone();
                         let audio_running = state.audio_running.take();
                         let segment_rx = state.segment_rx.take();
@@ -249,7 +281,8 @@ pub async fn run_daemon() -> Result<()> {
                         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
                         let segments = if let Some(rx) = segment_rx {
-                            rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_default()
+                            rx.recv_timeout(std::time::Duration::from_secs(5))
+                                .unwrap_or_default()
                         } else {
                             Vec::new()
                         };
@@ -257,7 +290,8 @@ pub async fn run_daemon() -> Result<()> {
                         if let Some(meeting) = &mut state.current_meeting {
                             let ended = chrono::Utc::now();
                             meeting.ended_at = Some(ended);
-                            let duration_secs = (ended.timestamp() - meeting.started_at.timestamp()) as u64;
+                            let duration_secs =
+                                (ended.timestamp() - meeting.started_at.timestamp()) as u64;
                             meeting.duration_seconds = Some(duration_secs);
                             meeting.status = crate::storage::MeetingStatus::Processing;
 
@@ -269,7 +303,8 @@ pub async fn run_daemon() -> Result<()> {
                                 if let Ok(db) = Database::open(&db_path) {
                                     let _ = db.update_meeting(meeting);
                                     if !segments.is_empty() {
-                                        let _ = db.insert_transcript_segments(&meeting.id, &segments);
+                                        let _ =
+                                            db.insert_transcript_segments(&meeting.id, &segments);
                                     }
                                 }
                             }
@@ -277,9 +312,17 @@ pub async fn run_daemon() -> Result<()> {
                             let duration_mins = meeting.duration_seconds.unwrap_or(0) / 60;
                             let meeting_title = meeting.title.clone();
                             let meeting_id_clone = meeting_id.clone();
-                            
-                            let _ = notification::notify_recording_stopped(&meeting_title, duration_mins);
-                            
+
+                            let _ = notification::notify_recording_stopped(
+                                &meeting_title,
+                                duration_mins,
+                            );
+
+                            if let Ok(cfg) = load_config() {
+                                notification::play_recording_stop(&cfg.audio_cues);
+                                update_waybar_status(&cfg.waybar, &WaybarStatus::idle());
+                            }
+
                             if let Some(path) = audio_path {
                                 if streaming_enabled && !segments.is_empty() {
                                     std::thread::spawn(move || {
@@ -287,7 +330,10 @@ pub async fn run_daemon() -> Result<()> {
                                     });
                                 } else {
                                     std::thread::spawn(move || {
-                                        run_background_transcription_and_diarization(meeting_id_clone, path);
+                                        run_background_transcription_and_diarization(
+                                            meeting_id_clone,
+                                            path,
+                                        );
                                     });
                                 }
                             }
@@ -400,16 +446,18 @@ async fn handle_request(
 
             match start_recording_internal(&mut state, title).await {
                 Ok(meeting_id) => {
-                    tracing::info!("Recording started, checking for meeting windows. meeting_detected={:?}", state.meeting_detected);
-                    let detected_app = state.meeting_detected.or_else(|| {
-                        find_any_meeting_window()
-                    });
-                    
+                    tracing::info!(
+                        "Recording started, checking for meeting windows. meeting_detected={:?}",
+                        state.meeting_detected
+                    );
+                    let detected_app = state.meeting_detected.or_else(|| find_any_meeting_window());
+
                     if let Some(app) = detected_app {
                         state.meeting_detected = Some(app);
                         if let Some(tx) = state.detection_tx.clone() {
                             tracing::info!("Starting meeting window monitor for manual recording (detected: {})", app);
-                            state.meeting_monitor_running = Some(start_meeting_window_monitor(app, tx));
+                            state.meeting_monitor_running =
+                                Some(start_meeting_window_monitor(app, tx));
                         } else {
                             tracing::warn!("No detection_tx available, cannot start monitor");
                         }
@@ -440,7 +488,7 @@ async fn handle_request(
                 .as_ref()
                 .map(|m| m.id.to_string())
                 .unwrap_or_default();
-            
+
             let meeting_id_clone = meeting_id.clone();
 
             let audio_path = state.audio_path.clone();
@@ -461,7 +509,10 @@ async fn handle_request(
             let segments = if let Some(rx) = segment_rx {
                 match rx.recv_timeout(std::time::Duration::from_secs(5)) {
                     Ok(segs) => {
-                        tracing::info!("Received {} segments from streaming transcriber", segs.len());
+                        tracing::info!(
+                            "Received {} segments from streaming transcriber",
+                            segs.len()
+                        );
                         segs
                     }
                     Err(_) => {
@@ -489,7 +540,7 @@ async fn handle_request(
                         if let Err(e) = db.update_meeting(meeting) {
                             tracing::error!("Failed to update meeting in database: {}", e);
                         }
-                        
+
                         if !segments.is_empty() {
                             if let Err(e) = db.insert_transcript_segments(&meeting.id, &segments) {
                                 tracing::error!("Failed to save transcript segments: {}", e);
@@ -502,23 +553,24 @@ async fn handle_request(
 
                 let duration_mins = meeting.duration_seconds.unwrap_or(0) / 60;
                 let meeting_title = meeting.title.clone();
-                
+
+                let _ = notification::notify_recording_stopped(&meeting_title, duration_mins);
+
+                if let Ok(cfg) = load_config() {
+                    notification::play_recording_stop(&cfg.audio_cues);
+                    update_waybar_status(&cfg.waybar, &WaybarStatus::idle());
+                }
+
                 if streaming_enabled && !segments.is_empty() {
-                    let _ = notification::notify_recording_stopped(&meeting_title, duration_mins);
-                    
                     if let Some(path) = audio_path {
                         std::thread::spawn(move || {
                             run_background_diarization(meeting_id_clone, path);
                         });
                     }
-                } else {
-                    let _ = notification::notify_recording_stopped(&meeting_title, duration_mins);
-                    
-                    if let Some(path) = audio_path {
-                        std::thread::spawn(move || {
-                            run_background_transcription_and_diarization(meeting_id_clone, path);
-                        });
-                    }
+                } else if let Some(path) = audio_path {
+                    std::thread::spawn(move || {
+                        run_background_transcription_and_diarization(meeting_id_clone, path);
+                    });
                 }
             }
 
@@ -564,6 +616,11 @@ async fn start_recording_internal(state: &mut DaemonState, title: String) -> Res
 
     let _ = notification::notify_recording_started(&title);
 
+    if let Ok(cfg) = load_config() {
+        notification::play_recording_start(&cfg.audio_cues);
+        update_waybar_status(&cfg.waybar, &WaybarStatus::recording(&title, 0));
+    }
+
     Ok(meeting_id)
 }
 
@@ -573,21 +630,20 @@ async fn setup_recording_path(meeting_id: &str) -> Result<PathBuf> {
     Ok(recordings_dir.join(format!("{}.wav", meeting_id)))
 }
 
-async fn start_audio_recording(
-    state: &mut DaemonState,
-    audio_path: PathBuf,
-) -> Result<()> {
+async fn start_audio_recording(state: &mut DaemonState, audio_path: PathBuf) -> Result<()> {
     let audio_running = Arc::new(AtomicBool::new(true));
     let audio_running_task = audio_running.clone();
     let audio_path_task = audio_path.clone();
-    
+
     let nemotron_model_dir = check_nemotron_model();
     let streaming_enabled = nemotron_model_dir.is_some();
-    
+
     if streaming_enabled {
         tracing::info!("Streaming transcription enabled (Nemotron model found)");
     } else {
-        tracing::info!("Streaming transcription disabled (Nemotron model not found, will transcribe at end)");
+        tracing::info!(
+            "Streaming transcription disabled (Nemotron model not found, will transcribe at end)"
+        );
     }
 
     let (segment_tx, segment_rx) = std::sync::mpsc::channel();
@@ -595,7 +651,8 @@ async fn start_audio_recording(
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
         rt.block_on(async move {
-            let segments = run_recording_task(audio_path_task, audio_running_task, nemotron_model_dir).await;
+            let segments =
+                run_recording_task(audio_path_task, audio_running_task, nemotron_model_dir).await;
             let _ = segment_tx.send(segments);
         });
     });
@@ -611,7 +668,7 @@ async fn start_audio_recording(
 fn check_nemotron_model() -> Option<PathBuf> {
     let models_dir = models_dir().ok()?;
     let manager = ParakeetModelManager::new(models_dir);
-    
+
     if manager.model_exists(ParakeetModel::NemotronStreaming) {
         Some(manager.model_dir(ParakeetModel::NemotronStreaming))
     } else {
@@ -620,7 +677,7 @@ fn check_nemotron_model() -> Option<PathBuf> {
 }
 
 async fn run_recording_task(
-    audio_path: PathBuf, 
+    audio_path: PathBuf,
     is_running: Arc<AtomicBool>,
     nemotron_model_dir: Option<PathBuf>,
 ) -> Vec<TranscriptSegment> {
@@ -632,18 +689,20 @@ async fn run_recording_task(
         }
     };
 
-    let transcriber = nemotron_model_dir.and_then(|model_dir| {
-        match StreamingTranscriber::new(&model_dir) {
+    let transcriber =
+        nemotron_model_dir.and_then(|model_dir| match StreamingTranscriber::new(&model_dir) {
             Ok(t) => {
                 tracing::info!("Streaming transcriber initialized");
                 Some(t)
             }
             Err(e) => {
-                tracing::warn!("Failed to create streaming transcriber: {}. Will transcribe at end.", e);
+                tracing::warn!(
+                    "Failed to create streaming transcriber: {}. Will transcribe at end.",
+                    e
+                );
                 None
             }
-        }
-    });
+        });
 
     let mic_capture = match MicCapture::from_default() {
         Ok(capture) => capture,
@@ -673,7 +732,10 @@ async fn run_recording_task(
                 (Some(stream), Some(rx))
             }
             Err(e) => {
-                tracing::warn!("Failed to start loopback capture: {}. Recording microphone only.", e);
+                tracing::warn!(
+                    "Failed to start loopback capture: {}. Recording microphone only.",
+                    e
+                );
                 (None, None)
             }
         }
@@ -694,7 +756,9 @@ async fn run_recording_task(
                 break;
             }
 
-            match tokio::time::timeout(tokio::time::Duration::from_millis(100), mixed_rx.recv()).await {
+            match tokio::time::timeout(tokio::time::Duration::from_millis(100), mixed_rx.recv())
+                .await
+            {
                 Ok(Ok(chunk)) => {
                     if let Err(e) = recorder.write_chunk(&chunk) {
                         tracing::error!("Failed to write audio chunk: {}", e);
@@ -718,7 +782,9 @@ async fn run_recording_task(
                 break;
             }
 
-            match tokio::time::timeout(tokio::time::Duration::from_millis(100), mixed_rx.recv()).await {
+            match tokio::time::timeout(tokio::time::Duration::from_millis(100), mixed_rx.recv())
+                .await
+            {
                 Ok(Ok(chunk)) => {
                     if let Err(e) = recorder.write_chunk(&chunk) {
                         tracing::error!("Failed to write audio chunk: {}", e);
@@ -761,7 +827,10 @@ async fn run_recording_task(
         let _ = t.flush();
         match t.stop() {
             Ok(segments) => {
-                tracing::info!("Streaming transcription complete: {} segments", segments.len());
+                tracing::info!(
+                    "Streaming transcription complete: {} segments",
+                    segments.len()
+                );
                 return segments;
             }
             Err(e) => {
@@ -790,7 +859,7 @@ async fn mic_only_task(
 
 fn run_background_diarization(meeting_id: String, audio_path: PathBuf) {
     tracing::info!("Starting background diarization for meeting {}", meeting_id);
-    
+
     let models_dir = match models_dir() {
         Ok(dir) => dir,
         Err(e) => {
@@ -799,16 +868,17 @@ fn run_background_diarization(meeting_id: String, audio_path: PathBuf) {
             return;
         }
     };
-    
-    let diar_manager = crate::transcription::diarization_models::DiarizationModelManager::new(models_dir);
+
+    let diar_manager =
+        crate::transcription::diarization_models::DiarizationModelManager::new(models_dir);
     let diar_model = crate::transcription::diarization_models::DiarizationModel::SortformerV2;
-    
+
     if !diar_manager.model_exists(diar_model) {
         tracing::warn!("Diarization model not found, skipping diarization");
         mark_meeting_complete(&meeting_id);
         return;
     }
-    
+
     let samples = match load_wav_samples(&audio_path) {
         Ok(s) => s,
         Err(e) => {
@@ -817,7 +887,7 @@ fn run_background_diarization(meeting_id: String, audio_path: PathBuf) {
             return;
         }
     };
-    
+
     let model_path = diar_manager.model_path(diar_model);
     let mut diarizer = match crate::transcription::diarization::Diarizer::new(&model_path) {
         Ok(d) => d,
@@ -827,7 +897,7 @@ fn run_background_diarization(meeting_id: String, audio_path: PathBuf) {
             return;
         }
     };
-    
+
     let speaker_segments = match diarizer.diarize(samples, 16000) {
         Ok(segs) => segs,
         Err(e) => {
@@ -836,15 +906,19 @@ fn run_background_diarization(meeting_id: String, audio_path: PathBuf) {
             return;
         }
     };
-    
-    tracing::info!("Diarization complete: {} speaker segments", speaker_segments.len());
-    
+
+    tracing::info!(
+        "Diarization complete: {} speaker segments",
+        speaker_segments.len()
+    );
+
     if let Ok(db_path) = database_path() {
         if let Ok(db) = Database::open(&db_path) {
             let meeting_id_obj = crate::storage::MeetingId::from_string(meeting_id.clone());
             if let Ok(mut segments) = db.get_transcript_segments(&meeting_id_obj) {
                 for seg in segments.iter_mut() {
-                    if let Some(speaker) = speaker_segments.iter()
+                    if let Some(speaker) = speaker_segments
+                        .iter()
                         .find(|s| {
                             let mid = (seg.start_ms + seg.end_ms) / 2;
                             mid >= s.start_ms && mid <= s.end_ms
@@ -854,16 +928,16 @@ fn run_background_diarization(meeting_id: String, audio_path: PathBuf) {
                         seg.speaker = Some(speaker);
                     }
                 }
-                
+
                 let _ = db.delete_transcript_segments(&meeting_id_obj);
                 let _ = db.insert_transcript_segments(&meeting_id_obj, &segments);
                 tracing::info!("Updated {} segments with speaker labels", segments.len());
             }
         }
     }
-    
+
     run_background_summarization(meeting_id.clone());
-    
+
     mark_meeting_complete(&meeting_id);
     let _ = notification::notify_status(&format!("Processing complete for meeting"));
 }
@@ -882,7 +956,10 @@ fn run_background_summarization(meeting_id: String) {
         return;
     }
 
-    tracing::info!("Starting background summarization for meeting {}", meeting_id);
+    tracing::info!(
+        "Starting background summarization for meeting {}",
+        meeting_id
+    );
 
     let db_path = match database_path() {
         Ok(p) => p,
@@ -943,7 +1020,8 @@ fn run_background_summarization(meeting_id: String) {
             if let Ok(Some(meeting)) = db.get_meeting(&meeting_id_obj) {
                 if meeting.title == "Untitled Meeting" {
                     tracing::info!("Generating title for untitled meeting");
-                    let title_result = rt.block_on(crate::llm::generate_title(&cfg.llm, &summary.markdown));
+                    let title_result =
+                        rt.block_on(crate::llm::generate_title(&cfg.llm, &summary.markdown));
                     if let Ok(title) = title_result {
                         tracing::info!("Generated title: {}", title);
                         let mut updated = meeting;
@@ -1000,8 +1078,11 @@ fn generate_meeting_notes(
 }
 
 fn run_background_transcription_and_diarization(meeting_id: String, audio_path: PathBuf) {
-    tracing::info!("Starting background transcription for meeting {}", meeting_id);
-    
+    tracing::info!(
+        "Starting background transcription for meeting {}",
+        meeting_id
+    );
+
     let models_dir = match models_dir() {
         Ok(dir) => dir,
         Err(e) => {
@@ -1010,16 +1091,16 @@ fn run_background_transcription_and_diarization(meeting_id: String, audio_path: 
             return;
         }
     };
-    
+
     let parakeet_manager = ParakeetModelManager::new(models_dir.clone());
     let parakeet_model = ParakeetModel::TdtV3;
-    
+
     if !parakeet_manager.model_exists(parakeet_model) {
         tracing::error!("Parakeet model not found for batch transcription");
         mark_meeting_complete(&meeting_id);
         return;
     }
-    
+
     let model_dir = parakeet_manager.model_dir(parakeet_model);
     let mut engine = crate::transcription::parakeet::ParakeetEngine::new();
     if let Err(e) = engine.load_model(&model_dir, false) {
@@ -1027,18 +1108,22 @@ fn run_background_transcription_and_diarization(meeting_id: String, audio_path: 
         mark_meeting_complete(&meeting_id);
         return;
     }
-    
-    let transcript = match crate::transcription::parakeet::transcribe_wav_file(&mut engine, &audio_path) {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::error!("Transcription failed: {}", e);
-            mark_meeting_complete(&meeting_id);
-            return;
-        }
-    };
-    
-    tracing::info!("Transcription complete: {} segments", transcript.segments.len());
-    
+
+    let transcript =
+        match crate::transcription::parakeet::transcribe_wav_file(&mut engine, &audio_path) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("Transcription failed: {}", e);
+                mark_meeting_complete(&meeting_id);
+                return;
+            }
+        };
+
+    tracing::info!(
+        "Transcription complete: {} segments",
+        transcript.segments.len()
+    );
+
     if let Ok(db_path) = database_path() {
         if let Ok(db) = Database::open(&db_path) {
             let meeting_id_obj = crate::storage::MeetingId::from_string(meeting_id.clone());
@@ -1047,7 +1132,7 @@ fn run_background_transcription_and_diarization(meeting_id: String, audio_path: 
             }
         }
     }
-    
+
     run_background_diarization(meeting_id, audio_path);
 }
 
@@ -1065,10 +1150,10 @@ fn mark_meeting_complete(meeting_id: &str) {
 
 fn load_wav_samples(path: &PathBuf) -> Result<Vec<f32>> {
     use hound::WavReader;
-    
+
     let mut reader = WavReader::open(path)
         .map_err(|e| MuesliError::Audio(format!("Failed to open WAV: {}", e)))?;
-    
+
     let spec = reader.spec();
     let samples: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Int => {
@@ -1079,13 +1164,12 @@ fn load_wav_samples(path: &PathBuf) -> Result<Vec<f32>> {
                 .map(|s| s as f32 / max_val)
                 .collect()
         }
-        hound::SampleFormat::Float => {
-            reader.samples::<f32>().filter_map(|s| s.ok()).collect()
-        }
+        hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
     };
-    
+
     if spec.channels > 1 {
-        Ok(samples.chunks(spec.channels as usize)
+        Ok(samples
+            .chunks(spec.channels as usize)
             .map(|chunk| chunk.iter().sum::<f32>() / chunk.len() as f32)
             .collect())
     } else {
@@ -1102,16 +1186,27 @@ fn find_any_meeting_window() -> Option<MeetingApp> {
             return None;
         }
     };
-    
+
     tracing::info!("Found {} windows, checking for meeting apps", windows.len());
     for window in &windows {
-        tracing::debug!("Checking window: class='{}' title='{}'", window.class, window.title);
-        if let Some(app) = crate::detection::patterns::detect_meeting_app(&window.class, &window.title) {
-            tracing::info!("Found meeting window: {} ({} - {})", app, window.class, window.title);
+        tracing::debug!(
+            "Checking window: class='{}' title='{}'",
+            window.class,
+            window.title
+        );
+        if let Some(app) =
+            crate::detection::patterns::detect_meeting_app(&window.class, &window.title)
+        {
+            tracing::info!(
+                "Found meeting window: {} ({} - {})",
+                app,
+                window.class,
+                window.title
+            );
             return Some(app);
         }
     }
-    
+
     tracing::info!("No meeting windows found");
     None
 }
@@ -1122,36 +1217,41 @@ fn start_meeting_window_monitor(
 ) -> Arc<AtomicBool> {
     let monitor_running = Arc::new(AtomicBool::new(true));
     let monitor_running_clone = monitor_running.clone();
-    
+
     tracing::info!("Starting meeting window monitor for {}", app);
-    
+
     tokio::spawn(async move {
         let check_interval = std::time::Duration::from_secs(3);
-        
+
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         tracing::debug!("Meeting window monitor active for {}", app);
-        
+
         while monitor_running_clone.load(Ordering::Relaxed) {
             tokio::time::sleep(check_interval).await;
-            
+
             if !monitor_running_clone.load(Ordering::Relaxed) {
                 tracing::debug!("Monitor flag set to false, stopping");
                 break;
             }
-            
+
             let window_exists = crate::detection::hyprland::meeting_window_exists(app);
             tracing::trace!("Meeting window check for {}: exists={}", app, window_exists);
-            
+
             if !window_exists {
-                tracing::info!("Meeting window for {} no longer exists, triggering auto-stop", app);
-                let _ = detection_tx.send(DetectionEvent::MeetingWindowClosed { app }).await;
+                tracing::info!(
+                    "Meeting window for {} no longer exists, triggering auto-stop",
+                    app
+                );
+                let _ = detection_tx
+                    .send(DetectionEvent::MeetingWindowClosed { app })
+                    .await;
                 break;
             }
         }
-        
+
         tracing::debug!("Meeting window monitor stopped for {}", app);
     });
-    
+
     monitor_running
 }
 

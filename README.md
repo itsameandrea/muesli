@@ -15,6 +15,8 @@ muesli is a background daemon that monitors your Hyprland window manager for mee
 - **AI Summarization**: Generate structured notes with Claude or GPT (optional)
 - **SQLite Storage**: Persistent storage of meetings, transcripts, and metadata
 - **Desktop Notifications**: Real-time status updates via Mako/notify-rust
+- **Audio Cues**: Optional sound notifications when recording starts/stops
+- **Waybar Integration**: Status bar module showing recording state
 - **CLI Interface**: Full command-line control for manual recording and management
 - **Systemd Integration**: Run as a user service for automatic startup
 
@@ -59,15 +61,16 @@ The `muesli setup` command provides an interactive wizard that configures everyt
   muesli Setup Wizard
 ==========================================
 
-[1/9] Creating directories...
-[2/9] Initializing configuration...
-[3/9] GPU Acceleration
-[4/9] Transcription Model Selection
-[5/9] Speaker Diarization Model
-[6/9] Streaming Transcription (Optional)
-[7/9] LLM for Meeting Notes
-[8/9] Meeting Detection
-[9/9] Systemd Service
+[1/10] Creating directories...
+[2/10] Initializing configuration...
+[3/10] GPU Acceleration
+[4/10] Transcription Model Selection
+[5/10] Speaker Diarization Model
+[6/10] Streaming Transcription (Optional)
+[7/10] LLM for Meeting Notes
+[8/10] Meeting Detection
+[9/10] Audio Cues
+[10/10] Systemd Service
 ```
 
 **What the wizard configures:**
@@ -81,6 +84,7 @@ The `muesli setup` command provides an interactive wizard that configures everyt
 | **Streaming** | Optional Nemotron model for real-time transcription |
 | **LLM** | Auto-detects LM Studio and lists available models for meeting summaries |
 | **Meeting Detection** | Auto-detect Zoom/Meet/Teams windows and prompt to record |
+| **Audio Cues** | Play sounds when recording starts/stops |
 | **Systemd Service** | Install user service for auto-start on login |
 
 ### Manual Installation
@@ -155,6 +159,16 @@ auto_prompt = true           # Show record/skip prompt when meeting detected
 prompt_timeout_secs = 30     # Auto-dismiss prompt after 30s
 debounce_ms = 500
 poll_interval_secs = 30
+
+[audio_cues]
+enabled = false              # Play sounds on recording start/stop
+volume = 0.5                 # Volume level (0.0 - 1.0)
+start_sound = "..."          # Optional: custom WAV/OGG/MP3 for start
+stop_sound = "..."           # Optional: custom WAV/OGG/MP3 for stop
+
+[waybar]
+enabled = false              # Write status to file for Waybar integration
+status_file = "..."          # Optional, defaults to $XDG_RUNTIME_DIR/muesli/waybar.json
 ```
 
 ### Transcription Engines
@@ -369,6 +383,70 @@ muesli audio test-mic [--duration 3]
 # Test loopback capture (3 seconds)
 muesli audio test-loopback [--duration 3]
 ```
+
+### Waybar Integration
+
+```bash
+# Output JSON status for Waybar custom module
+muesli waybar
+```
+
+## Waybar Integration
+
+muesli can display recording status in Waybar using a custom module.
+
+### Setup
+
+1. Enable waybar integration in `~/.config/muesli/config.toml`:
+
+```toml
+[waybar]
+enabled = true
+```
+
+2. Add to your Waybar config (`~/.config/waybar/config`):
+
+```json
+{
+  "custom/muesli": {
+    "exec": "muesli waybar",
+    "return-type": "json",
+    "interval": 5,
+    "signal": 8,
+    "format": "{icon}",
+    "format-icons": {
+      "idle": "",
+      "recording": "󰻂"
+    },
+    "tooltip": true,
+    "on-click": "muesli toggle"
+  }
+}
+```
+
+3. Add to your modules (e.g., in `modules-right`):
+
+```json
+"modules-right": ["custom/muesli", "clock"]
+```
+
+4. Style in `~/.config/waybar/style.css`:
+
+```css
+#custom-muesli {
+    font-size: 14px;
+}
+
+#custom-muesli.recording {
+    color: #ff5555;
+}
+
+#custom-muesli.idle {
+    color: #888888;
+}
+```
+
+The module shows a microphone icon that turns red when recording. Hover for tooltip with details.
 
 ## Hyprland Keybindings
 

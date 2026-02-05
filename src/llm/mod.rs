@@ -1,8 +1,8 @@
-pub mod local;
+pub mod chunking;
 pub mod claude;
+pub mod local;
 pub mod openai;
 pub mod prompts;
-pub mod chunking;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -38,8 +38,8 @@ pub async fn summarize_transcript(
     config: &LlmConfig,
     transcript: &Transcript,
 ) -> Result<SummaryResult> {
-    let provider = LlmProvider::from_engine(&config.engine)
-        .context("Invalid LLM engine specified")?;
+    let provider =
+        LlmProvider::from_engine(&config.engine).context("Invalid LLM engine specified")?;
 
     if needs_chunking(&transcript.segments) {
         tracing::info!("Transcript is large, using chunked summarization");
@@ -62,8 +62,8 @@ pub async fn summarize_transcript(
 }
 
 pub async fn generate_title(config: &LlmConfig, meeting_notes: &str) -> Result<String> {
-    let provider = LlmProvider::from_engine(&config.engine)
-        .context("Invalid LLM engine specified")?;
+    let provider =
+        LlmProvider::from_engine(&config.engine).context("Invalid LLM engine specified")?;
 
     let prompt = prompts::title_generation_prompt(meeting_notes);
     let title = call_llm(config, provider, &prompt).await?;
@@ -101,13 +101,17 @@ async fn summarize_chunked(
         );
 
         let chunk_text = chunk.format_for_prompt();
-        let prompt = prompts::chunk_summary_prompt(&chunk_text, chunk.chunk_index, chunk.total_chunks);
-        
+        let prompt =
+            prompts::chunk_summary_prompt(&chunk_text, chunk.chunk_index, chunk.total_chunks);
+
         let summary = call_llm(config, provider, &prompt).await?;
         chunk_summaries.push(summary);
     }
 
-    tracing::info!("Synthesizing {} chunk summaries into final notes", chunk_summaries.len());
+    tracing::info!(
+        "Synthesizing {} chunk summaries into final notes",
+        chunk_summaries.len()
+    );
     let synthesis_prompt = prompts::synthesis_prompt(&chunk_summaries);
     let final_summary = call_llm(config, provider, &synthesis_prompt).await?;
 
@@ -133,12 +137,7 @@ async fn call_llm(config: &LlmConfig, provider: LlmProvider, prompt: &str) -> Re
             openai::summarize_with_openai(api_key, &config.openai_model, prompt).await
         }
         LlmProvider::Local => {
-            local::summarize_with_local(
-                &config.local_lms_path,
-                &config.local_model,
-                prompt,
-            )
-            .await
+            local::summarize_with_local(&config.local_lms_path, &config.local_model, prompt).await
         }
     }
 }
@@ -148,7 +147,7 @@ fn format_time(ms: u64) -> String {
     let hours = total_seconds / 3600;
     let minutes = (total_seconds % 3600) / 60;
     let seconds = total_seconds % 60;
-    
+
     if hours > 0 {
         format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
     } else {
@@ -162,8 +161,14 @@ mod tests {
 
     #[test]
     fn test_provider_from_engine() {
-        assert_eq!(LlmProvider::from_engine("claude"), Some(LlmProvider::Claude));
-        assert_eq!(LlmProvider::from_engine("openai"), Some(LlmProvider::OpenAI));
+        assert_eq!(
+            LlmProvider::from_engine("claude"),
+            Some(LlmProvider::Claude)
+        );
+        assert_eq!(
+            LlmProvider::from_engine("openai"),
+            Some(LlmProvider::OpenAI)
+        );
         assert_eq!(LlmProvider::from_engine("local"), Some(LlmProvider::Local));
         assert_eq!(LlmProvider::from_engine("invalid"), None);
     }

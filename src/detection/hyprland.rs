@@ -22,7 +22,10 @@ impl HyprlandMonitor {
         }
     }
 
-    pub fn with_poll_interval(event_tx: mpsc::Sender<DetectionEvent>, poll_interval_secs: u64) -> Self {
+    pub fn with_poll_interval(
+        event_tx: mpsc::Sender<DetectionEvent>,
+        poll_interval_secs: u64,
+    ) -> Self {
         Self {
             event_tx,
             poll_interval_secs,
@@ -75,7 +78,11 @@ impl HyprlandMonitor {
                         pid: None,
                     };
 
-                    tracing::info!("Window change event: {} - {}", window_data.class, window_data.title);
+                    tracing::info!(
+                        "Window change event: {} - {}",
+                        window_data.class,
+                        window_data.title
+                    );
 
                     let event = DetectionEvent::WindowChanged {
                         window: window_info,
@@ -124,14 +131,23 @@ impl HyprlandMonitor {
         tracing::debug!("Scanning {} windows for meeting apps", windows.len());
 
         for window in &windows {
-            if let Some(app) = crate::detection::patterns::detect_meeting_app(&window.class, &window.title) {
+            if let Some(app) =
+                crate::detection::patterns::detect_meeting_app(&window.class, &window.title)
+            {
                 let window_key = format!("{}:{}", window.class, window.title);
 
                 if last_meeting_key.as_ref() != Some(&window_key) {
-                    tracing::info!("Poll detected meeting window ({}): {} - {}", app, window.class, window.title);
+                    tracing::info!(
+                        "Poll detected meeting window ({}): {} - {}",
+                        app,
+                        window.class,
+                        window.title
+                    );
                     *last_meeting_key = Some(window_key);
 
-                    let event = DetectionEvent::WindowChanged { window: window.clone() };
+                    let event = DetectionEvent::WindowChanged {
+                        window: window.clone(),
+                    };
                     if let Err(e) = event_tx.send(event).await {
                         tracing::warn!("Failed to send polled window event: {}", e);
                     }
@@ -157,13 +173,15 @@ pub fn is_hyprland_running() -> bool {
 pub fn get_socket_path() -> Option<String> {
     ensure_hyprland_env();
     let sig = std::env::var("HYPRLAND_INSTANCE_SIGNATURE").ok()?;
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
+    let runtime_dir =
+        std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
     Some(format!("{}/hypr/{}/.socket.sock", runtime_dir, sig))
 }
 
 fn ensure_hyprland_env() {
     if let Ok(current_sig) = std::env::var("HYPRLAND_INSTANCE_SIGNATURE") {
-        let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
+        let runtime_dir =
+            std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
         let socket_path = format!("{}/hypr/{}/.socket.sock", runtime_dir, current_sig);
         if std::path::Path::new(&socket_path).exists() {
             return;
@@ -178,9 +196,10 @@ fn ensure_hyprland_env() {
 }
 
 fn find_active_hyprland_session() -> Option<String> {
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
+    let runtime_dir =
+        std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
     let hypr_dir = format!("{}/hypr", runtime_dir);
-    
+
     let entries = match std::fs::read_dir(&hypr_dir) {
         Ok(e) => e,
         Err(_) => return None,
@@ -200,12 +219,17 @@ fn find_active_hyprland_session() -> Option<String> {
         }
 
         let log_path = path.join("hyprland.log");
-        let modified = log_path.metadata()
+        let modified = log_path
+            .metadata()
             .and_then(|m| m.modified())
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
 
         let dir_name = entry.file_name().to_string_lossy().to_string();
-        tracing::debug!("Found Hyprland session: {} (log modified: {:?})", dir_name, modified);
+        tracing::debug!(
+            "Found Hyprland session: {} (log modified: {:?})",
+            dir_name,
+            modified
+        );
 
         match &best_session {
             None => best_session = Some((dir_name, modified)),
@@ -242,11 +266,16 @@ pub fn meeting_window_exists(app: crate::detection::MeetingApp) -> bool {
         }
     };
 
-    let exists = windows.iter().any(|w| {
-        crate::detection::patterns::detect_meeting_app(&w.class, &w.title) == Some(app)
-    });
-    
-    tracing::trace!("Checking if {} window exists among {} windows: {}", app, windows.len(), exists);
+    let exists = windows
+        .iter()
+        .any(|w| crate::detection::patterns::detect_meeting_app(&w.class, &w.title) == Some(app));
+
+    tracing::trace!(
+        "Checking if {} window exists among {} windows: {}",
+        app,
+        windows.len(),
+        exists
+    );
     exists
 }
 
@@ -271,7 +300,11 @@ mod tests {
         }
 
         let result = HyprlandMonitor::get_active_window();
-        assert!(result.is_ok(), "Failed to get active window: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to get active window: {:?}",
+            result.err()
+        );
     }
 
     #[tokio::test]

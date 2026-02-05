@@ -21,6 +21,12 @@ pub struct MuesliConfig {
 
     #[serde(default)]
     pub detection: DetectionConfig,
+
+    #[serde(default)]
+    pub audio_cues: AudioCuesConfig,
+
+    #[serde(default)]
+    pub waybar: WaybarConfig,
 }
 
 impl Default for MuesliConfig {
@@ -32,6 +38,8 @@ impl Default for MuesliConfig {
             storage: StorageConfig::default(),
             daemon: DaemonConfig::default(),
             detection: DetectionConfig::default(),
+            audio_cues: AudioCuesConfig::default(),
+            waybar: WaybarConfig::default(),
         }
     }
 }
@@ -259,6 +267,38 @@ fn default_poll_interval() -> u64 {
 
 fn default_prompt_timeout() -> u64 {
     30
+}
+
+fn default_volume() -> f32 {
+    0.5
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioCuesConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_volume")]
+    pub volume: f32,
+    pub start_sound: Option<std::path::PathBuf>,
+    pub stop_sound: Option<std::path::PathBuf>,
+}
+
+impl Default for AudioCuesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            volume: 0.5,
+            start_sound: None,
+            stop_sound: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WaybarConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub status_file: Option<std::path::PathBuf>,
 }
 
 #[cfg(test)]

@@ -2,15 +2,15 @@
 
 use serde::{Deserialize, Serialize};
 
-pub mod whisper;
+pub mod deepgram;
+pub mod diarization;
+pub mod diarization_models;
+pub mod models;
+pub mod openai;
 pub mod parakeet;
 pub mod parakeet_models;
 pub mod streaming;
-pub mod deepgram;
-pub mod openai;
-pub mod models;
-pub mod diarization;
-pub mod diarization_models;
+pub mod whisper;
 
 /// A segment of transcribed text
 #[derive(Debug, Clone, Serialize, Deserialize)]

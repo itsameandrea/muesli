@@ -1,5 +1,5 @@
 use crate::error::{MuesliError, Result};
-use crate::transcription::{TranscriptSegment, Transcript};
+use crate::transcription::{Transcript, TranscriptSegment};
 use reqwest::multipart;
 use serde::Deserialize;
 use std::path::Path;
@@ -23,30 +23,35 @@ struct OpenAISegment {
 /// Transcribe audio file via OpenAI Whisper API
 pub async fn transcribe_file<P: AsRef<Path>>(api_key: &str, audio_path: P) -> Result<Transcript> {
     let audio_data = std::fs::read(audio_path.as_ref())?;
-    let filename = audio_path.as_ref()
+    let filename = audio_path
+        .as_ref()
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("audio.wav")
         .to_string();
-    
+
     transcribe_bytes(api_key, &audio_data, &filename).await
 }
 
 /// Transcribe audio bytes via OpenAI Whisper API
-pub async fn transcribe_bytes(api_key: &str, audio_data: &[u8], filename: &str) -> Result<Transcript> {
+pub async fn transcribe_bytes(
+    api_key: &str,
+    audio_data: &[u8],
+    filename: &str,
+) -> Result<Transcript> {
     let client = reqwest::Client::new();
-    
+
     let file_part = multipart::Part::bytes(audio_data.to_vec())
         .file_name(filename.to_string())
         .mime_str("audio/wav")
         .map_err(|e| MuesliError::Api(format!("Failed to create multipart: {}", e)))?;
-    
+
     let form = multipart::Form::new()
         .text("model", "whisper-1")
         .text("response_format", "verbose_json")
         .text("timestamp_granularities[]", "segment")
         .part("file", file_part);
-    
+
     let response = client
         .post(OPENAI_API_URL)
         .bearer_auth(api_key)
@@ -54,18 +59,21 @@ pub async fn transcribe_bytes(api_key: &str, audio_data: &[u8], filename: &str) 
         .send()
         .await
         .map_err(|e| MuesliError::Api(format!("OpenAI request failed: {}", e)))?;
-    
+
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(MuesliError::Api(format!("OpenAI error {}: {}", status, body)));
+        return Err(MuesliError::Api(format!(
+            "OpenAI error {}: {}",
+            status, body
+        )));
     }
-    
+
     let result: OpenAIResponse = response
         .json()
         .await
         .map_err(|e| MuesliError::Api(format!("Failed to parse OpenAI response: {}", e)))?;
-    
+
     let segments = if let Some(api_segments) = result.segments {
         api_segments
             .into_iter()
@@ -87,7 +95,7 @@ pub async fn transcribe_bytes(api_key: &str, audio_data: &[u8], filename: &str) 
             confidence: None,
         }]
     };
-    
+
     Ok(Transcript::new(segments))
 }
 

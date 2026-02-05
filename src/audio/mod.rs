@@ -3,9 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 pub mod capture;
+pub mod convert;
 pub mod loopback;
 pub mod mixer;
-pub mod convert;
 pub mod recorder;
 
 /// Audio sample format

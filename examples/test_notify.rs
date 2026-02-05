@@ -2,7 +2,7 @@ use notify_rust::{Hint, Notification, Timeout};
 
 fn main() {
     println!("Creating notification...");
-    
+
     let notification = Notification::new()
         .summary("Meeting Detected - Click to Record")
         .body("Test meeting\n\nClick this notification to start recording, or dismiss to skip.")

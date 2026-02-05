@@ -32,13 +32,9 @@ struct OpenAIResponseMessage {
     content: String,
 }
 
-pub async fn summarize_with_openai(
-    api_key: &str,
-    model: &str,
-    prompt: &str,
-) -> Result<String> {
+pub async fn summarize_with_openai(api_key: &str, model: &str, prompt: &str) -> Result<String> {
     let client = reqwest::Client::new();
-    
+
     let request = OpenAIRequest {
         model: model.to_string(),
         messages: vec![OpenAIMessage {
@@ -91,7 +87,7 @@ mod tests {
             max_tokens: 4096,
             temperature: 0.3,
         };
-        
+
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("gpt-4o"));
         assert!(json.contains("test"));

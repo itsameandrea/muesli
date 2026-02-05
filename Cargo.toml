@@ -30,6 +30,7 @@ cpal = "0.15"
 hound = "3.5"
 rubato = "0.15"
 bytemuck = "1.14"
+rodio = "0.19"
 
 # Transcription
 whisper-rs = { git = "https://codeberg.org/tazz4843/whisper-rs.git" }

@@ -3,18 +3,19 @@ use std::io::Read;
 use std::process::{Command, Stdio};
 use tokio::task;
 
-pub async fn summarize_with_local(
-    lms_path: &str,
-    model: &str,
-    prompt: &str,
-) -> Result<String> {
+pub async fn summarize_with_local(lms_path: &str, model: &str, prompt: &str) -> Result<String> {
     let lms_binary = if lms_path.is_empty() {
-        find_lms_binary().context("Could not find lms CLI. Install LM Studio or set local_lms_path in config.")?
+        find_lms_binary()
+            .context("Could not find lms CLI. Install LM Studio or set local_lms_path in config.")?
     } else {
         lms_path.to_string()
     };
 
-    tracing::info!("Running LM Studio CLI: {} chat {} (streaming)", lms_binary, model);
+    tracing::info!(
+        "Running LM Studio CLI: {} chat {} (streaming)",
+        lms_binary,
+        model
+    );
 
     let lms_binary_clone = lms_binary.clone();
     let model_clone = model.to_string();
@@ -50,7 +51,7 @@ fn run_lms_streaming(lms_binary: &str, model: &str, prompt: &str) -> Result<Stri
                 let chunk = String::from_utf8_lossy(&buffer[..n]);
                 output.push_str(&chunk);
                 total_chars += chunk.len();
-                
+
                 if total_chars % 1000 < chunk.len() {
                     tracing::debug!("LLM streaming: {} chars", total_chars);
                 }
@@ -66,7 +67,9 @@ fn run_lms_streaming(lms_binary: &str, model: &str, prompt: &str) -> Result<Stri
     let status = child.wait().context("Failed to wait for lms process")?;
 
     if !status.success() {
-        let stderr = child.stderr.take()
+        let stderr = child
+            .stderr
+            .take()
             .map(|mut s| {
                 let mut buf = String::new();
                 let _ = s.read_to_string(&mut buf);
@@ -83,7 +86,7 @@ fn run_lms_streaming(lms_binary: &str, model: &str, prompt: &str) -> Result<Stri
 fn clean_terminal_escapes(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
-    
+
     while let Some(c) = chars.next() {
         if c == '\x1b' {
             if let Some(&'[') = chars.peek() {
@@ -101,14 +104,14 @@ fn clean_terminal_escapes(s: &str) -> String {
             result.push(c);
         }
     }
-    
+
     result
 }
 
 pub fn find_lms_binary() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
     let lmstudio_path = format!("{}/.lmstudio/bin/lms", home);
-    
+
     if std::path::Path::new(&lmstudio_path).exists() {
         return Some(lmstudio_path);
     }
@@ -140,7 +143,7 @@ mod tests {
         let input = "\x1b[KHello World\r\n";
         let cleaned = clean_terminal_escapes(input);
         assert_eq!(cleaned, "Hello World\n");
-        
+
         let input2 = "\x1b[?25hTest";
         let cleaned2 = clean_terminal_escapes(input2);
         assert_eq!(cleaned2, "Test");
