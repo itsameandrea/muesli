@@ -2,6 +2,7 @@ use crate::cli::commands::*;
 use crate::config;
 use crate::daemon::{DaemonClient, DaemonRequest, DaemonResponse};
 use crate::error::Result;
+use crate::llm::local::find_lms_binary;
 use crate::storage::database::Database;
 use crate::storage::MeetingId;
 use crate::transcription::diarization_models::{DiarizationModel, DiarizationModelManager};
@@ -29,6 +30,7 @@ pub async fn handle_command(cli: Cli) -> Result<()> {
         Commands::Audio { action } => handle_audio(action).await,
         Commands::Diarization { action } => handle_diarization(action).await,
         Commands::Summarize { id } => handle_summarize(&id).await,
+        Commands::Setup => handle_setup().await,
     }
 }
 
@@ -292,18 +294,20 @@ async fn do_transcribe<P: AsRef<Path>>(audio_path: P, verbose: bool) -> Result<T
     let engine = cfg.transcription.engine.to_lowercase();
     let audio_path = audio_path.as_ref();
 
+    let model_name = cfg.transcription.effective_model();
+    
     let mut transcript = match engine.as_str() {
         "whisper" => {
             let models_dir = config::loader::models_dir()?;
             let manager = ModelManager::new(models_dir);
 
-            let model = WhisperModel::from_str(&cfg.transcription.whisper_model)
+            let model = WhisperModel::from_str(model_name)
                 .unwrap_or(WhisperModel::Base);
             
             if !manager.model_exists(model) {
                 return Err(crate::error::MuesliError::Config(format!(
                     "Whisper model '{}' not downloaded. Run: muesli models download {}",
-                    cfg.transcription.whisper_model, cfg.transcription.whisper_model
+                    model_name, model_name
                 )));
             }
 
@@ -321,13 +325,13 @@ async fn do_transcribe<P: AsRef<Path>>(audio_path: P, verbose: bool) -> Result<T
             let models_dir = config::loader::models_dir()?;
             let manager = ParakeetModelManager::new(models_dir);
 
-            let model = ParakeetModel::from_str(&cfg.transcription.parakeet_model)
+            let model = ParakeetModel::from_str(model_name)
                 .unwrap_or(ParakeetModel::TdtV3);
             
             if !manager.model_exists(model) {
                 return Err(crate::error::MuesliError::Config(format!(
                     "Parakeet model '{}' not downloaded. Run: muesli parakeet download {}",
-                    cfg.transcription.parakeet_model, cfg.transcription.parakeet_model
+                    model_name, model_name
                 )));
             }
 
@@ -805,6 +809,486 @@ async fn handle_summarize(id: &str) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn handle_setup() -> Result<()> {
+    use dialoguer::{theme::ColorfulTheme, Confirm, Select};
+    
+    println!();
+    println!("==========================================");
+    println!("  muesli Setup Wizard");
+    println!("==========================================");
+    println!();
+
+    println!("[1/8] Creating directories...");
+    config::loader::ensure_directories()?;
+    let config_dir = config::loader::config_dir()?;
+    let data_dir = config::loader::data_dir()?;
+    let models_dir = config::loader::models_dir()?;
+    println!("  Config: {}", config_dir.display());
+    println!("  Data:   {}", data_dir.display());
+    println!("  Models: {}", models_dir.display());
+    println!();
+
+    println!("[2/8] Initializing configuration...");
+    let config_path = config::loader::config_path()?;
+    if config_path.exists() {
+        println!("  Configuration already exists at {}", config_path.display());
+    } else {
+        let _ = config::loader::load_config()?;
+        println!("  Created default configuration at {}", config_path.display());
+    }
+    println!();
+
+    println!("[3/8] GPU Acceleration");
+    println!("  GPU acceleration provides faster transcription.");
+    println!();
+    
+    let use_gpu = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("Enable GPU acceleration? (requires Vulkan/CUDA/Metal)")
+        .default(false)
+        .interact()
+        .unwrap_or(false);
+    
+    update_config_value("use_gpu", if use_gpu { "true" } else { "false" })?;
+    println!("  GPU acceleration: {}", if use_gpu { "enabled" } else { "disabled" });
+    println!();
+
+    println!("[4/8] Transcription Model Selection");
+    println!();
+    
+    let whisper_models = vec![
+        ("tiny", 75, "Fastest, lowest accuracy"),
+        ("base", 142, "Good balance (recommended)"),
+        ("small", 466, "Better accuracy"),
+        ("medium", 1500, "High accuracy"),
+        ("large", 2900, "Best accuracy"),
+        ("large-v3-turbo", 1620, "Fast + high quality"),
+    ];
+    
+    let parakeet_models = vec![
+        ("parakeet-v3", 632, "Full precision, best quality"),
+        ("parakeet-v3-int8", 217, "INT8 quantized, fastest (recommended)"),
+    ];
+
+    let whisper_manager = ModelManager::new(models_dir.clone());
+    let parakeet_manager = ParakeetModelManager::new(models_dir.clone());
+
+    let mut model_options: Vec<String> = vec![];
+    
+    model_options.push("--- Whisper Models (whisper.cpp) ---".to_string());
+    for (name, size, desc) in &whisper_models {
+        let model = WhisperModel::from_str(name).unwrap();
+        let installed = if whisper_manager.model_exists(model) { " [installed]" } else { "" };
+        model_options.push(format!("{:<18} ({:>4} MB) - {}{}", name, size, desc, installed));
+    }
+    
+    model_options.push("--- Parakeet Models (ONNX, 20-30x faster) ---".to_string());
+    for (name, size, desc) in &parakeet_models {
+        let model = ParakeetModel::from_str(name).unwrap();
+        let installed = if parakeet_manager.model_exists(model) { " [installed]" } else { "" };
+        model_options.push(format!("{:<18} ({:>4} MB) - {}{}", name, size, desc, installed));
+    }
+    
+    model_options.push("Skip model download".to_string());
+
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select a transcription model")
+        .items(&model_options)
+        .default(2)
+        .interact()
+        .unwrap_or(model_options.len() - 1);
+
+    if selection == 0 || selection == 7 {
+        println!("  Skipping model download");
+    } else if selection >= 1 && selection <= 6 {
+        let model_name = whisper_models[selection - 1].0;
+        let model = WhisperModel::from_str(model_name).unwrap();
+        
+        if whisper_manager.model_exists(model) {
+            println!("  Model '{}' is already installed", model_name);
+        } else {
+            println!("  Downloading {} model...", model_name);
+            let path = whisper_manager.download_model(model, |downloaded, total| {
+                let percent = (downloaded as f64 / total as f64 * 100.0) as u32;
+                print!("\r  Progress: {}% ({}/{} MB)    ", percent, downloaded / 1024 / 1024, total / 1024 / 1024);
+                std::io::stdout().flush().ok();
+            })?;
+            println!("\n  Downloaded to: {}", path.display());
+        }
+        
+        update_transcription_config("whisper", model_name)?;
+    } else if selection >= 8 && selection <= 9 {
+        let model_name = parakeet_models[selection - 8].0;
+        let model = ParakeetModel::from_str(model_name).unwrap();
+        
+        if parakeet_manager.model_exists(model) {
+            println!("  Model '{}' is already installed", model_name);
+        } else {
+            println!("  Downloading {} model...", model_name);
+            let path = parakeet_manager.download_model(model, |filename, downloaded, total| {
+                let percent = (downloaded as f64 / total as f64 * 100.0) as u32;
+                print!("\r  {}: {}% ({}/{} MB)    ", filename, percent, downloaded / 1024 / 1024, total / 1024 / 1024);
+                std::io::stdout().flush().ok();
+            })?;
+            println!("\n  Downloaded to: {}", path.display());
+        }
+        
+        update_transcription_config("parakeet", model_name)?;
+    }
+    println!();
+
+    println!("[5/8] Speaker Diarization Model");
+    let diar_manager = DiarizationModelManager::new(models_dir.clone());
+    let diar_model = DiarizationModel::SortformerV2;
+    
+    if diar_manager.model_exists(diar_model) {
+        println!("  Diarization model already installed");
+    } else {
+        let download_diar = Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt("Download speaker diarization model (sortformer-v2, ~127 MB)?")
+            .default(true)
+            .interact()
+            .unwrap_or(false);
+        
+        if download_diar {
+            println!("  Downloading sortformer-v2...");
+            let path = tokio::task::spawn_blocking(move || {
+                diar_manager.download_model(diar_model, |downloaded, total| {
+                    let percent = (downloaded as f64 / total as f64 * 100.0) as u32;
+                    print!("\r  Progress: {}% ({}/{} MB)    ", percent, downloaded / 1024 / 1024, total / 1024 / 1024);
+                    std::io::stdout().flush().ok();
+                })
+            }).await.map_err(|e| crate::error::MuesliError::Config(format!("Download failed: {}", e)))??;
+            println!("\n  Downloaded to: {}", path.display());
+        } else {
+            println!("  Skipping diarization model");
+            println!("  (You can download later with: muesli diarization download sortformer-v2)");
+        }
+    }
+    println!();
+
+    println!("[6/8] Streaming Transcription (Optional)");
+    println!("  Nemotron streaming enables real-time transcription during recording.");
+    println!("  No wait time after stopping - transcription is already done!");
+    println!();
+    
+    let nemotron_model = ParakeetModel::NemotronStreaming;
+    let parakeet_manager = ParakeetModelManager::new(models_dir.clone());
+    
+    if parakeet_manager.model_exists(nemotron_model) {
+        println!("  Nemotron streaming model already installed");
+    } else {
+        let download_nemotron = Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt("Download Nemotron streaming model (~2.5 GB)?")
+            .default(false)
+            .interact()
+            .unwrap_or(false);
+        
+        if download_nemotron {
+            println!("  Downloading nemotron-streaming (this may take a while)...");
+            let path = parakeet_manager.download_model(nemotron_model, |filename, downloaded, total| {
+                let percent = (downloaded as f64 / total as f64 * 100.0) as u32;
+                print!("\r  {}: {}% ({}/{} MB)    ", filename, percent, downloaded / 1024 / 1024, total / 1024 / 1024);
+                std::io::stdout().flush().ok();
+            })?;
+            println!("\n  Downloaded to: {}", path.display());
+        } else {
+            println!("  Skipping streaming model");
+            println!("  (You can download later with: muesli parakeet download nemotron-streaming)");
+        }
+    }
+    println!();
+
+    println!("[7/9] LLM for Meeting Notes");
+    println!("  An LLM generates meeting summaries and notes from transcripts.");
+    println!("  LM Studio provides free local LLM support.");
+    println!();
+    
+    let lms_path = find_lms_binary();
+    if let Some(ref lms) = lms_path {
+        println!("  Found LM Studio CLI at: {}", lms);
+        
+        let output = std::process::Command::new(lms)
+            .args(["ls", "--json"])
+            .output();
+        
+        let mut models: Vec<String> = vec![];
+        if let Ok(out) = output {
+            if out.status.success() {
+                if let Ok(text) = String::from_utf8(out.stdout) {
+                    for line in text.lines() {
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                            if let Some(path) = json.get("path").and_then(|p| p.as_str()) {
+                                let name = std::path::Path::new(path)
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or(path);
+                                if !name.contains("embedding") && !name.contains("Embedding") {
+                                    models.push(name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if models.is_empty() {
+            let output = std::process::Command::new(lms)
+                .args(["ls"])
+                .output();
+            if let Ok(out) = output {
+                if out.status.success() {
+                    let text = String::from_utf8_lossy(&out.stdout);
+                    for line in text.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() 
+                            && !trimmed.starts_with("LLM") 
+                            && !trimmed.starts_with("EMBEDDING")
+                            && !trimmed.starts_with("---")
+                            && !trimmed.starts_with("You have")
+                            && !trimmed.contains("embedding")
+                            && !trimmed.contains("Embedding")
+                        {
+                            if let Some(name) = trimmed.split_whitespace().next() {
+                                models.push(name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if !models.is_empty() {
+            println!("  Found {} LLM model(s) in LM Studio", models.len());
+            println!();
+            
+            let mut options: Vec<String> = models.iter().map(|m| m.clone()).collect();
+            options.push("Skip LLM setup".to_string());
+            
+            let selection = Select::with_theme(&ColorfulTheme::default())
+                .with_prompt("Select an LLM model for meeting notes")
+                .items(&options)
+                .default(0)
+                .interact()
+                .unwrap_or(options.len() - 1);
+            
+            if selection < models.len() {
+                let model = &models[selection];
+                update_llm_config("local", model)?;
+                println!("  LLM configured: {} (via LM Studio)", model);
+            } else {
+                update_llm_config("none", "")?;
+                println!("  LLM disabled");
+            }
+        } else {
+            println!("  No LLM models found in LM Studio.");
+            println!("  Download a model in LM Studio first, then run setup again.");
+            update_llm_config("none", "")?;
+        }
+    } else {
+        println!("  LM Studio not found.");
+        println!("  Install from https://lmstudio.ai for local LLM support.");
+        println!("  Or configure Claude/OpenAI API keys in config.toml");
+        update_llm_config("none", "")?;
+    }
+    println!();
+
+    println!("[8/9] Meeting Detection");
+    println!("  Auto-detection monitors your windows for meeting apps (Zoom, Meet, Teams, etc.)");
+    println!("  When detected, a notification prompt asks if you want to record.");
+    println!();
+    
+    let auto_prompt = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("Enable automatic meeting detection and recording prompts?")
+        .default(true)
+        .interact()
+        .unwrap_or(true);
+    
+    update_config_value("auto_prompt", if auto_prompt { "true" } else { "false" })?;
+    update_config_value("prompt_timeout_secs", "30")?;
+    println!("  Meeting auto-detection: {}", if auto_prompt { "enabled" } else { "disabled" });
+    println!();
+
+    println!("[9/9] Systemd Service");
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let systemd_dir = std::path::PathBuf::from(&home).join(".config/systemd/user");
+    
+    let service_path = systemd_dir.join("muesli.service");
+    
+    if service_path.exists() {
+        println!("  Service already installed at {}", service_path.display());
+    } else {
+        let install_service = Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt("Install systemd user service for auto-start?")
+            .default(true)
+            .interact()
+            .unwrap_or(false);
+        
+        if install_service {
+            std::fs::create_dir_all(&systemd_dir)?;
+            
+            let binary_path = std::env::current_exe()
+                .unwrap_or_else(|_| std::path::PathBuf::from("muesli"));
+            
+            let service_content = format!(
+                r#"[Unit]
+Description=muesli - AI-powered meeting note-taker
+Documentation=https://github.com/itsameandrea/muesli
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart={} daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"#,
+                binary_path.display()
+            );
+            
+            std::fs::write(&service_path, service_content)?;
+            println!("  Service installed at {}", service_path.display());
+            
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "daemon-reload"])
+                .status();
+            
+            println!("  To enable auto-start: systemctl --user enable muesli.service");
+            println!("  To start now:         systemctl --user start muesli.service");
+        } else {
+            println!("  Skipping systemd service installation");
+        }
+    }
+    println!();
+
+    println!("==========================================");
+    println!("  Setup Complete!");
+    println!("==========================================");
+    println!();
+    println!("Next steps:");
+    println!();
+    println!("  1. Start the daemon:");
+    println!("     muesli daemon");
+    println!();
+    println!("  2. Or enable auto-start:");
+    println!("     systemctl --user enable --now muesli.service");
+    println!();
+    println!("  3. Test audio devices:");
+    println!("     muesli audio list-devices");
+    println!();
+    println!("  4. Edit configuration if needed:");
+    println!("     muesli config edit");
+    println!();
+
+    Ok(())
+}
+
+fn update_llm_config(engine: &str, model: &str) -> Result<()> {
+    let config_path = config::loader::config_path()?;
+    let content = std::fs::read_to_string(&config_path)?;
+    
+    let mut in_llm = false;
+    let updated = content
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if trimmed == "[llm]" {
+                in_llm = true;
+            } else if trimmed.starts_with("[") && trimmed.ends_with("]") {
+                in_llm = false;
+            }
+            
+            if in_llm && trimmed.starts_with("engine =") {
+                format!("engine = \"{}\"", engine)
+            } else if in_llm && trimmed.starts_with("local_model =") {
+                format!("local_model = \"{}\"", model)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    
+    std::fs::write(&config_path, updated)?;
+    Ok(())
+}
+
+fn update_transcription_config(engine: &str, model: &str) -> Result<()> {
+    let config_path = config::loader::config_path()?;
+    let content = std::fs::read_to_string(&config_path)?;
+    
+    let mut in_transcription = false;
+    let updated = content
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if trimmed == "[transcription]" {
+                in_transcription = true;
+            } else if trimmed.starts_with("[") && trimmed.ends_with("]") {
+                in_transcription = false;
+            }
+            
+            if in_transcription && trimmed.starts_with("engine =") {
+                format!("engine = \"{}\"", engine)
+            } else if in_transcription && trimmed.starts_with("model =") {
+                format!("model = \"{}\"", model)
+            } else if engine == "whisper" && trimmed.starts_with("whisper_model =") {
+                format!("whisper_model = \"{}\"", model)
+            } else if engine == "parakeet" && trimmed.starts_with("parakeet_model =") {
+                format!("parakeet_model = \"{}\"", model)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    
+    std::fs::write(&config_path, updated)?;
+    Ok(())
+}
+
+fn update_config_value(key: &str, value: &str) -> Result<()> {
+    let config_path = config::loader::config_path()?;
+    let content = std::fs::read_to_string(&config_path)?;
+    
+    let key_pattern = format!("{} =", key);
+    let key_found = content.lines().any(|line| line.trim().starts_with(&key_pattern));
+    
+    if key_found {
+        let updated = content
+            .lines()
+            .map(|line| {
+                if line.trim().starts_with(&key_pattern) {
+                    if value == "true" || value == "false" || value.parse::<i64>().is_ok() {
+                        format!("{} = {}", key, value)
+                    } else {
+                        format!("{} = \"{}\"", key, value)
+                    }
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&config_path, updated)?;
+    } else {
+        let mut content = content;
+        if !content.ends_with('\n') {
+            content.push('\n');
+        }
+        if value == "true" || value == "false" || value.parse::<i64>().is_ok() {
+            content.push_str(&format!("{} = {}\n", key, value));
+        } else {
+            content.push_str(&format!("{} = \"{}\"\n", key, value));
+        }
+        std::fs::write(&config_path, content)?;
+    }
+    
     Ok(())
 }
 

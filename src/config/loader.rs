@@ -104,7 +104,7 @@ pub fn load_config_with_env() -> Result<MuesliConfig> {
         config.transcription.engine = engine;
     }
     if let Ok(model) = std::env::var("MUESLI_WHISPER_MODEL") {
-        config.transcription.whisper_model = model;
+        config.transcription.model = model;
     }
 
     Ok(config)

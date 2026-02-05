@@ -47,7 +47,7 @@ src/
 ├── config/           # Configuration (TOML, serde)
 ├── daemon/           # Background service, Unix socket IPC
 ├── audio/            # Audio capture (cpal, PipeWire loopback)
-├── transcription/    # Whisper, Parakeet, Deepgram, OpenAI
+├── transcription/    # Whisper, Parakeet (ONNX), Deepgram, OpenAI, Diarization
 ├── detection/        # Hyprland window detection
 ├── notes/            # Markdown note generation
 ├── llm/              # AI summarization (Claude, OpenAI, local)
@@ -249,3 +249,87 @@ let is_running = Arc::new(AtomicBool::new(true));
 // In handler: is_running.store(false, Ordering::Relaxed);
 // In loop: if !is_running.load(Ordering::Relaxed) { break; }
 ```
+
+## CLI Commands
+
+```bash
+# Setup wizard (interactive, recommended for first-time)
+muesli setup
+
+# Recording
+muesli start [--title "Title"]
+muesli stop
+muesli toggle
+muesli status
+
+# Meeting management
+muesli list [--limit N]
+muesli notes <id>
+muesli transcript <id>
+muesli transcribe <id> [--hosted]
+muesli summarize <id>
+
+# Daemon
+muesli daemon
+
+# Configuration
+muesli config show|edit|path|init
+
+# Models - Whisper (whisper.cpp)
+muesli models list|download|delete <model>
+
+# Models - Parakeet (ONNX, 20-30x faster)
+muesli parakeet list|download|delete <model>
+# Models: parakeet-v3, parakeet-v3-int8, nemotron-streaming
+
+# Models - Diarization (speaker identification)
+muesli diarization list|download|delete <model>
+# Models: sortformer-v2
+
+# Audio testing
+muesli audio list-devices|test-mic|test-loopback [--duration N]
+```
+
+## Configuration Structure
+
+Config location: `~/.config/muesli/config.toml`
+
+```toml
+[audio]
+device_mic = "..."           # Optional, auto-detect if omitted
+device_loopback = "..."      # Optional, auto-detect if omitted
+capture_system_audio = true
+sample_rate = 16000
+
+[transcription]
+engine = "parakeet"          # "whisper" or "parakeet"
+model = "parakeet-v3-int8"   # Model name for selected engine
+use_gpu = false
+fallback_to_local = true
+
+[llm]
+engine = "local"             # "none", "local", "claude", "openai"
+local_model = "qwen2.5-7b"   # For LM Studio
+claude_model = "claude-sonnet-4-20250514"
+openai_model = "gpt-4o"
+
+[detection]
+auto_detect = true
+auto_prompt = true           # Show notification prompt for meetings
+prompt_timeout_secs = 30
+
+[storage]
+notes_dir = "..."            # Optional, defaults to ~/.local/share/muesli/notes
+database_path = "..."        # Optional, defaults to ~/.local/share/muesli/muesli.db
+recordings_dir = "..."       # Optional, defaults to ~/.local/share/muesli/recordings
+
+[daemon]
+socket_path = "..."          # Optional
+log_level = "info"
+```
+
+### TranscriptionConfig.effective_model()
+
+The `effective_model()` method returns the correct model based on engine:
+- If `model` is set and non-default, use it
+- Otherwise fall back to legacy `whisper_model`/`parakeet_model` fields (for backwards compatibility)

@@ -103,6 +103,9 @@ pub enum Commands {
         /// Meeting ID to summarize
         id: String,
     },
+
+    /// Interactive setup wizard for first-time configuration
+    Setup,
 }
 
 #[derive(Subcommand)]

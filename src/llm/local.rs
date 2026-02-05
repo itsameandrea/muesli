@@ -105,7 +105,7 @@ fn clean_terminal_escapes(s: &str) -> String {
     result
 }
 
-fn find_lms_binary() -> Option<String> {
+pub fn find_lms_binary() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
     let lmstudio_path = format!("{}/.lmstudio/bin/lms", home);
     

@@ -41,25 +41,51 @@ muesli is a background daemon that monitors your Hyprland window manager for mee
 
 ### Quick Install
 
-Run the installation script to build and install muesli:
-
 ```bash
-cd /home/itsameandrea/Code/itsameandrea/muesli
-./install.sh
+# Build and install
+cargo build --release
+cp target/release/muesli ~/.local/bin/  # or ~/.cargo/bin/
+
+# Run the interactive setup wizard
+muesli setup
 ```
 
-The script will:
-1. Check for Rust/cargo installation
-2. Build the release binary
-3. Install to `~/.cargo/bin/` or `~/.local/bin/`
-4. Create configuration directory at `~/.config/muesli/`
-5. Set up data directory at `~/.local/share/muesli/`
-6. Install systemd user service
-7. Download the default Whisper model (base)
+### Setup Wizard
+
+The `muesli setup` command provides an interactive wizard that configures everything:
+
+```
+==========================================
+  muesli Setup Wizard
+==========================================
+
+[1/9] Creating directories...
+[2/9] Initializing configuration...
+[3/9] GPU Acceleration
+[4/9] Transcription Model Selection
+[5/9] Speaker Diarization Model
+[6/9] Streaming Transcription (Optional)
+[7/9] LLM for Meeting Notes
+[8/9] Meeting Detection
+[9/9] Systemd Service
+```
+
+**What the wizard configures:**
+
+| Step | Description |
+|------|-------------|
+| **Directories** | Creates `~/.config/muesli/` and `~/.local/share/muesli/` |
+| **GPU Acceleration** | Enables Vulkan/CUDA/Metal for faster transcription |
+| **Transcription Model** | Choose Whisper (tiny→large) or Parakeet (20-30x faster ONNX) |
+| **Diarization** | Speaker identification model (sortformer-v2) |
+| **Streaming** | Optional Nemotron model for real-time transcription |
+| **LLM** | Auto-detects LM Studio and lists available models for meeting summaries |
+| **Meeting Detection** | Auto-detect Zoom/Meet/Teams windows and prompt to record |
+| **Systemd Service** | Install user service for auto-start on login |
 
 ### Manual Installation
 
-If you prefer to install manually:
+If you prefer to configure manually:
 
 ```bash
 # Build release binary
@@ -77,13 +103,17 @@ mkdir -p ~/.local/share/muesli/{recordings,notes,models}
 # Initialize configuration
 muesli config init
 
+# Download transcription model (choose one)
+muesli models download base           # Whisper base model
+muesli parakeet download parakeet-v3-int8  # Parakeet (faster)
+
+# Download diarization model (for speaker identification)
+muesli diarization download sortformer-v2
+
 # Install systemd service
 mkdir -p ~/.config/systemd/user
 cp assets/muesli.service ~/.config/systemd/user/
 systemctl --user daemon-reload
-
-# Download Whisper model
-muesli models download base
 ```
 
 ## Configuration
@@ -94,30 +124,56 @@ Configuration file location: `~/.config/muesli/config.toml`
 
 ```toml
 [audio]
-# Specific device names (None = auto-detect)
-device_mic = "alsa_input.usb-Blue_Microphones_Yeti_Stereo_Microphone"
-device_loopback = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
+# Specific device names (omit for auto-detect)
+# device_mic = "alsa_input.usb-Blue_Microphones_Yeti"
+# device_loopback = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
 capture_system_audio = true
 sample_rate = 16000
 
 [transcription]
-# Engine: "local", "deepgram", "openai"
-engine = "local"
-# Model: "tiny", "base", "small", "medium", "large"
-whisper_model = "base"
+# Engine: "whisper" or "parakeet"
+engine = "parakeet"
+# Model name (depends on engine)
+# Whisper: tiny, base, small, medium, large, large-v3-turbo
+# Parakeet: parakeet-v3, parakeet-v3-int8
+model = "parakeet-v3-int8"
+use_gpu = false
 fallback_to_local = true
 
 [llm]
 # Engine: "none", "local", "claude", "openai"
-engine = "none"
+engine = "local"
+# For local LLM (LM Studio)
+local_model = "qwen2.5-7b-instruct-1m"
+# For cloud LLMs
 claude_model = "claude-sonnet-4-20250514"
 openai_model = "gpt-4o"
 
 [detection]
 auto_detect = true
+auto_prompt = true           # Show record/skip prompt when meeting detected
+prompt_timeout_secs = 30     # Auto-dismiss prompt after 30s
 debounce_ms = 500
 poll_interval_secs = 30
 ```
+
+### Transcription Engines
+
+| Engine | Speed | Quality | Offline | Notes |
+|--------|-------|---------|---------|-------|
+| **parakeet** | 20-30x faster | Excellent | Yes | ONNX-based, recommended |
+| **whisper** | Baseline | Excellent | Yes | Original whisper.cpp |
+| **deepgram** | Fast | Excellent | No | Requires API key |
+| **openai** | Fast | Excellent | No | Requires API key |
+
+### LLM Engines
+
+| Engine | Cost | Setup |
+|--------|------|-------|
+| **local** | Free | Requires [LM Studio](https://lmstudio.ai) |
+| **claude** | Paid | Requires `claude_api_key` |
+| **openai** | Paid | Requires `openai_api_key` |
+| **none** | - | No summarization |
 
 ### API Keys (Optional)
 
@@ -214,6 +270,13 @@ muesli transcribe <meeting-id>
 
 ## CLI Commands Reference
 
+### Setup
+
+```bash
+# Interactive setup wizard (recommended for first-time setup)
+muesli setup
+```
+
 ### Recording Commands
 
 ```bash
@@ -222,6 +285,9 @@ muesli start [--title "Meeting Title"]
 
 # Stop current recording
 muesli stop
+
+# Toggle recording on/off
+muesli toggle
 
 # Show recording status
 muesli status
@@ -233,11 +299,15 @@ muesli status
 # List recorded meetings
 muesli list [--limit 10]
 
-# View meeting notes
-muesli view <meeting-id>
+# View meeting notes and transcript
+muesli notes <meeting-id>
+muesli transcript <meeting-id>
 
-# Transcribe a meeting
+# Transcribe a meeting (if not already transcribed)
 muesli transcribe <meeting-id> [--hosted]
+
+# Generate AI summary of a meeting
+muesli summarize <meeting-id>
 ```
 
 ### Daemon Control
@@ -271,14 +341,20 @@ muesli config init
 ### Model Management
 
 ```bash
-# List available Whisper models
+# Whisper models (whisper.cpp)
 muesli models list
-
-# Download a Whisper model
-muesli models download <tiny|base|small|medium|large>
-
-# Delete a downloaded model
+muesli models download <tiny|base|small|medium|large|large-v3-turbo>
 muesli models delete <model-name>
+
+# Parakeet models (ONNX, 20-30x faster)
+muesli parakeet list
+muesli parakeet download <parakeet-v3|parakeet-v3-int8|nemotron-streaming>
+muesli parakeet delete <model-name>
+
+# Diarization models (speaker identification)
+muesli diarization list
+muesli diarization download sortformer-v2
+muesli diarization delete sortformer-v2
 ```
 
 ### Audio Testing
