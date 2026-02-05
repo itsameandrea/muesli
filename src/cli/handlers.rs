@@ -27,6 +27,7 @@ pub async fn handle_command(cli: Cli) -> Result<()> {
         Commands::Setup => handle_setup().await,
         Commands::Uninstall => handle_uninstall().await,
         Commands::Waybar => handle_waybar().await,
+        Commands::Redo { id } => handle_redo(id).await,
     }
 }
 
@@ -1139,6 +1140,227 @@ async fn handle_waybar() -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn handle_redo(id: Option<String>) -> Result<()> {
+    let db_path = config::loader::database_path()?;
+    let db = Database::open(&db_path)?;
+
+    let meeting_id = match id {
+        Some(id) => id,
+        None => select_meeting_with_audio(&db)?,
+    };
+
+    let meeting = db
+        .get_meeting(&MeetingId::from_string(meeting_id.clone()))?
+        .ok_or_else(|| crate::error::MuesliError::MeetingNotFound(meeting_id.clone()))?;
+
+    let audio_path = meeting
+        .audio_path
+        .as_ref()
+        .ok_or_else(|| crate::error::MuesliError::Audio("No audio file for this meeting".into()))?;
+
+    if !audio_path.exists() {
+        eprintln!("Error: Audio file not found: {:?}", audio_path);
+        return Ok(());
+    }
+
+    println!("Re-processing: {}", meeting.title);
+    println!("Audio file: {:?}", audio_path);
+
+    let config = config::loader::load_config()?;
+    let models_dir = config::loader::models_dir()?;
+
+    println!("\n[1/3] Transcribing...");
+    let transcript = run_transcription(&config, &models_dir, audio_path)?;
+    println!("  {} segments transcribed", transcript.segments.len());
+
+    db.delete_transcript_segments(&meeting.id)?;
+    db.insert_transcript_segments(&meeting.id, &transcript.segments)?;
+
+    println!("\n[2/3] Diarization (speaker identification)...");
+    let diarization_manager = DiarizationModelManager::new(models_dir.clone());
+    if diarization_manager.model_exists(DiarizationModel::SortformerV2) {
+        let model_path = diarization_manager.model_path(DiarizationModel::SortformerV2);
+        match run_diarization(audio_path, &model_path) {
+            Ok(speaker_segments) => {
+                let mut segments = db.get_transcript_segments(&meeting.id)?;
+                for seg in segments.iter_mut() {
+                    if let Some(speaker) = speaker_segments
+                        .iter()
+                        .find(|s| {
+                            let mid = (seg.start_ms + seg.end_ms) / 2;
+                            mid >= s.start_ms && mid <= s.end_ms
+                        })
+                        .map(|s| format!("SPEAKER_{}", s.speaker_id + 1))
+                    {
+                        seg.speaker = Some(speaker);
+                    }
+                }
+                db.delete_transcript_segments(&meeting.id)?;
+                db.insert_transcript_segments(&meeting.id, &segments)?;
+                println!("  Speakers identified");
+            }
+            Err(e) => println!("  Skipped: {}", e),
+        }
+    } else {
+        println!("  Skipped (model not installed)");
+    }
+
+    println!("\n[3/3] Summarizing...");
+    if config.llm.engine != "none" {
+        let segments = db.get_transcript_segments(&meeting.id)?;
+        let transcript = crate::transcription::Transcript::new(segments);
+        match crate::llm::summarize_transcript(&config.llm, &transcript).await {
+            Ok(summary) => {
+                db.insert_summary(&meeting.id, &summary)?;
+                println!("  Summary generated");
+
+                let mut updated_meeting = meeting.clone();
+                match crate::llm::generate_title(&config.llm, &summary.markdown).await {
+                    Ok(title) => {
+                        println!("  Title: {}", title);
+                        updated_meeting.title = title;
+                        let _ = db.update_meeting(&updated_meeting);
+                    }
+                    Err(e) => println!("  Title generation failed: {}", e),
+                }
+
+                let notes_dir = config::loader::notes_dir()?;
+                let generator = crate::notes::markdown::NoteGenerator::new(notes_dir);
+                if let Ok(path) = generator.generate(&updated_meeting, &transcript, &summary) {
+                    println!("  Notes saved: {:?}", path);
+                }
+            }
+            Err(e) => println!("  Failed: {}", e),
+        }
+    } else {
+        println!("  Skipped (LLM not configured)");
+    }
+
+    println!("\nDone! View with: muesli notes {}", meeting_id);
+    Ok(())
+}
+
+fn select_meeting_with_audio(db: &Database) -> Result<String> {
+    use dialoguer::{theme::ColorfulTheme, Select};
+
+    let meetings: Vec<_> = db
+        .list_meetings(20)?
+        .into_iter()
+        .filter(|m| m.audio_path.as_ref().map(|p| p.exists()).unwrap_or(false))
+        .collect();
+
+    if meetings.is_empty() {
+        return Err(
+            crate::error::MuesliError::Config("No meetings with audio files found".to_string())
+                .into(),
+        );
+    }
+
+    let items: Vec<String> = meetings
+        .iter()
+        .map(|m| {
+            let date = m.started_at.format("%Y-%m-%d %H:%M");
+            let duration = m
+                .duration_seconds
+                .map(|d| format!("{}m", d / 60))
+                .unwrap_or_else(|| "?".to_string());
+            format!("{} | {} | {}", date, duration, truncate(&m.title, 40))
+        })
+        .collect();
+
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select a meeting to re-process")
+        .items(&items)
+        .default(0)
+        .interact()
+        .map_err(|e| crate::error::MuesliError::Config(format!("Selection cancelled: {}", e)))?;
+
+    Ok(meetings[selection].id.0.clone())
+}
+
+fn run_transcription(
+    config: &crate::config::settings::MuesliConfig,
+    models_dir: &std::path::Path,
+    audio_path: &std::path::Path,
+) -> Result<crate::transcription::Transcript> {
+    match config.transcription.engine.as_str() {
+        "parakeet" => {
+            let manager = ParakeetModelManager::new(models_dir.to_path_buf());
+            let model = ParakeetModel::from_str(&config.transcription.model)
+                .unwrap_or(ParakeetModel::TdtV3Int8);
+
+            if !manager.model_exists(model) {
+                return Err(crate::error::MuesliError::Config(format!(
+                    "Parakeet model {:?} not found. Run: muesli models parakeet download {}",
+                    model, config.transcription.model
+                ))
+                .into());
+            }
+
+            let model_dir = manager.model_dir(model);
+            let mut engine = crate::transcription::parakeet::ParakeetEngine::new();
+            engine.load_model(&model_dir, config.transcription.use_gpu)?;
+            crate::transcription::parakeet::transcribe_wav_file(&mut engine, audio_path)
+        }
+        "whisper" | _ => {
+            let manager = ModelManager::new(models_dir.to_path_buf());
+            let model = WhisperModel::from_str(&config.transcription.model)
+                .unwrap_or(WhisperModel::Base);
+
+            if !manager.model_exists(model) {
+                return Err(crate::error::MuesliError::Config(format!(
+                    "Whisper model {:?} not found. Run: muesli models whisper download {}",
+                    model, config.transcription.model
+                ))
+                .into());
+            }
+
+            let model_path = manager.model_path(model);
+            let engine =
+                crate::transcription::whisper::WhisperEngine::new(&model_path, config.transcription.use_gpu)?;
+            crate::transcription::whisper::transcribe_wav_file(&engine, audio_path)
+        }
+    }
+}
+
+fn run_diarization(
+    audio_path: &std::path::Path,
+    model_path: &std::path::Path,
+) -> Result<Vec<crate::transcription::diarization::SpeakerSegment>> {
+    let samples = load_wav_samples_for_diarization(audio_path)?;
+    let mut diarizer = crate::transcription::diarization::Diarizer::new(model_path)?;
+    diarizer.diarize(samples, 16000)
+}
+
+fn load_wav_samples_for_diarization(path: &std::path::Path) -> Result<Vec<f32>> {
+    use hound::WavReader;
+
+    let mut reader = WavReader::open(path)
+        .map_err(|e| crate::error::MuesliError::Audio(format!("Failed to open WAV: {}", e)))?;
+
+    let spec = reader.spec();
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Int => {
+            let max_val = (1 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .samples::<i32>()
+                .filter_map(|s| s.ok())
+                .map(|s| s as f32 / max_val)
+                .collect()
+        }
+        hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
+    };
+
+    if spec.channels > 1 {
+        Ok(samples
+            .chunks(spec.channels as usize)
+            .map(|chunk| chunk.iter().sum::<f32>() / chunk.len() as f32)
+            .collect())
+    } else {
+        Ok(samples)
+    }
 }
 
 fn update_llm_config(engine: &str, model: &str) -> Result<()> {

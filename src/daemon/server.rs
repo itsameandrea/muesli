@@ -281,8 +281,19 @@ pub async fn run_daemon() -> Result<()> {
                         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
                         let segments = if let Some(rx) = segment_rx {
-                            rx.recv_timeout(std::time::Duration::from_secs(5))
-                                .unwrap_or_default()
+                            match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+                                Ok(segs) => {
+                                    tracing::info!(
+                                        "Received {} segments from streaming transcriber",
+                                        segs.len()
+                                    );
+                                    segs
+                                }
+                                Err(_) => {
+                                    tracing::warn!("Timeout waiting for streaming segments (60s)");
+                                    Vec::new()
+                                }
+                            }
                         } else {
                             Vec::new()
                         };
@@ -330,7 +341,7 @@ pub async fn run_daemon() -> Result<()> {
                                     });
                                 } else {
                                     std::thread::spawn(move || {
-                                        run_background_transcription_and_diarization(
+                                        run_background_diarization_and_summarization(
                                             meeting_id_clone,
                                             path,
                                         );
@@ -507,7 +518,7 @@ async fn handle_request(
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
             let segments = if let Some(rx) = segment_rx {
-                match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                match rx.recv_timeout(std::time::Duration::from_secs(60)) {
                     Ok(segs) => {
                         tracing::info!(
                             "Received {} segments from streaming transcriber",
@@ -516,7 +527,7 @@ async fn handle_request(
                         segs
                     }
                     Err(_) => {
-                        tracing::warn!("Timeout waiting for streaming segments");
+                        tracing::warn!("Timeout waiting for streaming segments (60s)");
                         Vec::new()
                     }
                 }
@@ -569,7 +580,7 @@ async fn handle_request(
                     }
                 } else if let Some(path) = audio_path {
                     std::thread::spawn(move || {
-                        run_background_transcription_and_diarization(meeting_id_clone, path);
+                        run_background_diarization_and_summarization(meeting_id_clone, path);
                     });
                 }
             }
@@ -1077,62 +1088,11 @@ fn generate_meeting_notes(
     }
 }
 
-fn run_background_transcription_and_diarization(meeting_id: String, audio_path: PathBuf) {
+fn run_background_diarization_and_summarization(meeting_id: String, audio_path: PathBuf) {
     tracing::info!(
-        "Starting background transcription for meeting {}",
+        "Starting background processing for meeting {} (diarization + summarization)",
         meeting_id
     );
-
-    let models_dir = match models_dir() {
-        Ok(dir) => dir,
-        Err(e) => {
-            tracing::error!("Failed to get models dir: {}", e);
-            mark_meeting_complete(&meeting_id);
-            return;
-        }
-    };
-
-    let parakeet_manager = ParakeetModelManager::new(models_dir.clone());
-    let parakeet_model = ParakeetModel::TdtV3;
-
-    if !parakeet_manager.model_exists(parakeet_model) {
-        tracing::error!("Parakeet model not found for batch transcription");
-        mark_meeting_complete(&meeting_id);
-        return;
-    }
-
-    let model_dir = parakeet_manager.model_dir(parakeet_model);
-    let mut engine = crate::transcription::parakeet::ParakeetEngine::new();
-    if let Err(e) = engine.load_model(&model_dir, false) {
-        tracing::error!("Failed to load Parakeet model: {}", e);
-        mark_meeting_complete(&meeting_id);
-        return;
-    }
-
-    let transcript =
-        match crate::transcription::parakeet::transcribe_wav_file(&mut engine, &audio_path) {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::error!("Transcription failed: {}", e);
-                mark_meeting_complete(&meeting_id);
-                return;
-            }
-        };
-
-    tracing::info!(
-        "Transcription complete: {} segments",
-        transcript.segments.len()
-    );
-
-    if let Ok(db_path) = database_path() {
-        if let Ok(db) = Database::open(&db_path) {
-            let meeting_id_obj = crate::storage::MeetingId::from_string(meeting_id.clone());
-            if let Err(e) = db.insert_transcript_segments(&meeting_id_obj, &transcript.segments) {
-                tracing::error!("Failed to save transcript: {}", e);
-            }
-        }
-    }
-
     run_background_diarization(meeting_id, audio_path);
 }
 

@@ -82,6 +82,12 @@ pub enum Commands {
 
     /// Output status in Waybar JSON format (for custom module integration)
     Waybar,
+
+    /// Re-process a meeting (transcription + summarization)
+    Redo {
+        /// Meeting ID (interactive selection if omitted)
+        id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

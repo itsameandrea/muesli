@@ -2,42 +2,36 @@ use crate::transcription::TranscriptSegment;
 
 pub fn meeting_summary_prompt(transcript: &str) -> String {
     format!(
-        r#"You are an expert meeting analyst. Create comprehensive meeting notes from this transcript.
+        r#"Create meeting minutes from this transcript.
 
 TRANSCRIPT:
 {}
 
-Output well-structured MARKDOWN meeting notes with these sections:
+Output MARKDOWN with these sections:
 
-## TL;DR
-One sentence summary.
+## Topics Covered
+- Bullet list of main topics discussed (3-7 items)
 
-## Summary  
-3-5 sentence executive summary of the meeting's purpose, discussions, and outcomes.
-
-## Key Topics Discussed
-For each major topic (aim for 3-7):
+## Discussion
+For each topic above, create a subsection:
 ### [Topic Name]
-2-3 sentences explaining what was discussed.
+- Bullet points of what was discussed
+- Include specific details, names, numbers mentioned
+- Note any disagreements or alternative viewpoints
 
 ## Decisions Made
-- Each explicit decision or agreement made (if any)
+- List each decision (ONLY if explicit decisions were made, otherwise omit this section entirely)
 
 ## Action Items
-- [ ] Task description — Owner (if mentioned) — Due date (if mentioned)
-
-## Open Questions
-- Unresolved items or topics needing follow-up (if any)
-
----
+- [ ] Task — Owner — Due date (ONLY if action items exist, otherwise omit this section entirely)
 
 RULES:
-- Be specific and detailed, not generic
-- Use actual content from the transcript, not placeholders
-- Skip sections that have no content (except TL;DR, Summary, Key Topics which are required)
-- Format action items as checklist items with owner/due when available
+- Be specific and detailed, use actual content from the transcript
+- Fix transcription errors from context (e.g., "get" → "git", "hey I" → "AI")
+- Omit Decisions/Action Items sections if none exist (don't write "None")
+- No fluff, no filler, no corporate speak
 
-Output ONLY the markdown, no preamble or explanation."#,
+Output ONLY the markdown."#,
         transcript
     )
 }
@@ -58,50 +52,44 @@ pub fn meeting_summary_prompt_with_speakers(segments: &[TranscriptSegment]) -> S
     }
 
     format!(
-        r#"You are an expert meeting analyst. Create comprehensive meeting notes from this transcript.
+        r#"Create meeting minutes from this transcript.
 
-Speakers are labeled SPEAKER_1, SPEAKER_2, etc. Identify their roles from context (host, guest, interviewer, etc.) and use those roles in your notes.
+Speakers are labeled SPEAKER_1, SPEAKER_2, etc. Try to identify them by name if mentioned, otherwise use Speaker 1, Speaker 2.
 
 TRANSCRIPT:
 {}
 
-Output well-structured MARKDOWN meeting notes with these sections:
+Output MARKDOWN with these sections:
 
-## TL;DR
-One sentence summary.
+## Attendees
+- Speaker 1 (or name if identified): brief role if inferable
+- Speaker 2: ...
 
-## Participants
-Brief description of who was in the meeting and their roles (based on what you can infer).
+## Topics Covered
+- Bullet list of main topics discussed (3-7 items)
 
-## Summary  
-3-5 sentence executive summary covering who participated, what was discussed, and key outcomes.
-
-## Key Topics Discussed
-For each major topic (aim for 3-7):
+## Discussion
+For each topic above, create a subsection:
 ### [Topic Name]
-2-3 sentences explaining what was discussed, referencing who said key points.
+- Bullet points of what was discussed
+- Attribute key points to speakers (e.g., "Speaker 1 explained...", "John suggested...")
+- Include specific details, names, numbers, tools mentioned
+- Note any disagreements or alternative viewpoints
 
 ## Decisions Made
-- Each explicit decision or agreement (if any)
+- List each decision with who made/agreed to it (ONLY if explicit decisions were made, otherwise omit this section entirely)
 
 ## Action Items
-- [ ] Task description — Owner — Due date (if mentioned)
-
-## Open Questions  
-- Unresolved items needing follow-up (if any)
-
-## Notable Quotes
-> "Memorable or important quote" — Speaker
-
----
+- [ ] Task — Owner — Due date (ONLY if action items exist, otherwise omit this section entirely)
 
 RULES:
 - Be specific and detailed, use actual content from the transcript
-- Reference speakers by their inferred role when possible (e.g., "The host asked about...")
-- Skip sections that have no content (except TL;DR, Summary, Key Topics which are required)
-- Include 2-3 notable quotes that capture key insights
+- Fix transcription errors from context (e.g., "get" → "git", "hey I" → "AI", "Paracate" → "Parakeet")
+- Omit Decisions/Action Items sections if none exist (don't write "None")
+- No fluff, no filler, no corporate speak
+- Attribute statements to speakers throughout
 
-Output ONLY the markdown, no preamble or explanation."#,
+Output ONLY the markdown."#,
         transcript
     )
 }
@@ -119,30 +107,33 @@ pub fn chunk_summary_prompt(
     total_chunks: usize,
 ) -> String {
     format!(
-        r#"You are an expert meeting analyst. Summarize this portion of a meeting transcript.
-
-This is CHUNK {current} of {total} from a longer meeting.
+        r#"Summarize this portion of a meeting transcript (chunk {current} of {total}).
 
 TRANSCRIPT CHUNK:
 {transcript}
 
-Create a DETAILED summary of this portion including:
-
-## Chunk {current} Summary
-3-5 sentences covering what was discussed in this section.
+Output:
 
 ## Topics in This Section
 - List each distinct topic discussed
-- Include key points and who said what (if speakers are identified)
 
-## Decisions & Action Items
-- Any decisions made in this section
-- Any action items assigned
+## Discussion Details
+For each topic:
+### [Topic Name]
+- Key points discussed (attribute to speakers if identified)
+- Specific details, names, numbers mentioned
 
-## Notable Points
-- Important quotes or insights from this section
+## Decisions (if any)
+- Any explicit decisions made
 
-Be thorough - this will be merged with other chunk summaries to create final meeting notes.
+## Action Items (if any)
+- Any tasks assigned
+
+RULES:
+- Be thorough - this will be merged with other chunks
+- Fix transcription errors from context (e.g., "get" → "git", "hey I" → "AI")
+- Only include Decisions/Action Items if they actually exist
+
 Output ONLY the markdown."#,
         current = chunk_index + 1,
         total = total_chunks,
@@ -159,53 +150,39 @@ pub fn synthesis_prompt(chunk_summaries: &[String]) -> String {
         .join("\n");
 
     format!(
-        r#"You are an expert meeting analyst. Synthesize these chunk summaries into cohesive final meeting notes.
+        r#"Synthesize these chunk summaries into unified meeting minutes.
 
 {combined}
 
-Create UNIFIED meeting notes by:
-1. Merging related topics across chunks
-2. Consolidating all action items into one list
-3. Combining decisions made throughout
-4. Removing redundancy while preserving all important details
+Merge related topics, consolidate decisions/actions, remove redundancy.
 
-Output well-structured MARKDOWN meeting notes with these sections:
+Output MARKDOWN:
 
-## TL;DR
-One sentence summary of the entire meeting.
+## Attendees
+- List participants and roles (if identifiable)
 
-## Participants
-Who was in the meeting and their roles (if identifiable from the summaries).
+## Topics Covered
+- Bullet list of all main topics (5-10 for long meetings)
 
-## Summary  
-3-5 sentence executive summary of the full meeting.
-
-## Key Topics Discussed
-For each major topic (aim for 5-10 for long meetings):
+## Discussion
+For each topic:
 ### [Topic Name]
-2-3 sentences explaining what was discussed.
+- Key points discussed (attribute to speakers)
+- Specific details mentioned
 
 ## Decisions Made
-- All decisions from the entire meeting
+- All decisions from the meeting (OMIT section if none)
 
 ## Action Items
-- [ ] Task description — Owner — Due date (if mentioned)
-
-## Open Questions  
-- Unresolved items needing follow-up
-
-## Notable Quotes
-> "Memorable or important quote" — Speaker
-
----
+- [ ] Task — Owner — Due date (OMIT section if none)
 
 RULES:
-- Synthesize, don't just concatenate
-- Preserve chronological flow where it matters
-- Group related topics even if discussed across multiple chunks
-- Include all action items and decisions (don't lose any)
+- Synthesize, don't concatenate
+- Group related topics even if discussed across chunks
+- Keep all decisions and action items (don't lose any)
+- No fluff
 
-Output ONLY the markdown, no preamble."#,
+Output ONLY the markdown."#,
         combined = combined
     )
 }
@@ -244,8 +221,8 @@ mod tests {
         let transcript = "We discussed the project timeline and agreed to finish by Friday.";
         let prompt = meeting_summary_prompt(transcript);
         assert!(prompt.contains(transcript));
-        assert!(prompt.contains("Summary"));
-        assert!(prompt.contains("Action Items"));
+        assert!(prompt.contains("Topics Covered"));
+        assert!(prompt.contains("Discussion"));
     }
 
     #[test]
@@ -269,6 +246,6 @@ mod tests {
         let prompt = meeting_summary_prompt_with_speakers(&segments);
         assert!(prompt.contains("[00:00] SPEAKER_0: Hello everyone"));
         assert!(prompt.contains("[00:05] SPEAKER_1: Hi there"));
-        assert!(prompt.contains("Decisions Made"));
+        assert!(prompt.contains("Attendees"));
     }
 }
