@@ -29,12 +29,15 @@ pub struct DaemonState {
     pub recording: bool,
     pub current_meeting: Option<Meeting>,
     pub meeting_detected: Option<MeetingApp>,
+    pub prompt_active: bool,
     pub start_time: Instant,
     pub audio_running: Option<Arc<AtomicBool>>,
     pub audio_path: Option<PathBuf>,
     pub transcript_segments: Vec<TranscriptSegment>,
     pub streaming_enabled: bool,
     pub segment_rx: Option<std::sync::mpsc::Receiver<Vec<TranscriptSegment>>>,
+    pub meeting_monitor_running: Option<Arc<AtomicBool>>,
+    pub detection_tx: Option<mpsc::Sender<DetectionEvent>>,
 }
 
 impl Default for DaemonState {
@@ -43,12 +46,15 @@ impl Default for DaemonState {
             recording: false,
             current_meeting: None,
             meeting_detected: None,
+            prompt_active: false,
             start_time: Instant::now(),
             audio_running: None,
             audio_path: None,
             transcript_segments: Vec::new(),
             streaming_enabled: false,
             segment_rx: None,
+            meeting_monitor_running: None,
+            detection_tx: None,
         }
     }
 }
@@ -72,31 +78,247 @@ pub async fn run_daemon() -> Result<()> {
     let shutdown = Arc::new(AtomicBool::new(false));
 
     let (detection_tx, mut detection_rx) = mpsc::channel::<DetectionEvent>(100);
+    
+    {
+        let mut s = state.lock().await;
+        s.detection_tx = Some(detection_tx.clone());
+    }
+    
     let state_for_detection = state.clone();
+    let detection_tx_for_handler = detection_tx.clone();
 
     tokio::spawn(async move {
         while let Some(event) = detection_rx.recv().await {
-            let mut state = state_for_detection.lock().await;
             match event {
                 DetectionEvent::MeetingDetected { app, window } => {
-                    state.meeting_detected = Some(app);
-                    let _ = notification::notify_meeting_detected(app, &window.title);
+                    {
+                        let mut state = state_for_detection.lock().await;
+                        state.meeting_detected = Some(app);
+                    }
+
+                    let config = crate::config::loader::load_config();
+                    let auto_prompt = config
+                        .as_ref()
+                        .map(|c| c.detection.auto_prompt)
+                        .unwrap_or(false);
+
+                    if auto_prompt {
+                        let state_clone = state_for_detection.clone();
+                        let window_title = window.title.clone();
+                        let timeout = config
+                            .map(|c| c.detection.prompt_timeout_secs)
+                            .unwrap_or(30);
+                        let tx_for_monitor = detection_tx_for_handler.clone();
+
+                        tokio::spawn(async move {
+                            let title_for_prompt = window_title.clone();
+                            let response = tokio::task::spawn_blocking(move || {
+                                notification::prompt_meeting_detected(app, &title_for_prompt, timeout)
+                            })
+                            .await;
+
+                            match response {
+                                Ok(notification::PromptResponse::Record) => {
+                                    tracing::info!("User clicked Record, starting recording...");
+                                    let mut state = state_clone.lock().await;
+                                    if !state.recording {
+                                        let title = format!("{} Meeting", app);
+                                        match start_recording_internal(&mut state, title).await {
+                                            Ok(id) => {
+                                                tracing::info!("Recording started: {}", id);
+                                                state.meeting_monitor_running = Some(
+                                                    start_meeting_window_monitor(app, tx_for_monitor)
+                                                );
+                                            }
+                                            Err(e) => tracing::error!("Failed to auto-start recording: {}", e),
+                                        }
+                                    } else {
+                                        tracing::info!("Already recording, skipping");
+                                    }
+                                }
+                                Ok(notification::PromptResponse::Skip) => {
+                                    tracing::info!("User clicked Skip");
+                                }
+                                Ok(notification::PromptResponse::Closed) => {
+                                    tracing::debug!("Notification was closed/timed out");
+                                }
+                                Err(e) => {
+                                    tracing::error!("Prompt task failed: {:?}", e);
+                                }
+                            }
+                        });
+                    } else {
+                        let _ = notification::notify_meeting_detected(app, &window.title);
+                    }
                 }
-                DetectionEvent::MeetingEnded { .. } => {
-                    state.meeting_detected = None;
+                DetectionEvent::MeetingEnded { app } => {
+                    let mut state = state_for_detection.lock().await;
+                    if state.meeting_detected == Some(app) {
+                        state.meeting_detected = None;
+                    }
                 }
-                DetectionEvent::WindowChanged { .. } => {}
+                DetectionEvent::WindowChanged { window } => {
+                    tracing::debug!("Window changed: class={}, title={}", window.class, window.title);
+                    let detected_app = crate::detection::patterns::detect_meeting_app(&window.class, &window.title);
+                    
+                    let (current_detected, is_recording, prompt_active) = {
+                        let state = state_for_detection.lock().await;
+                        (state.meeting_detected, state.recording, state.prompt_active)
+                    };
+
+                    if let Some(app) = detected_app {
+                        tracing::debug!("Meeting app detected: {}", app);
+                        
+                        if is_recording || prompt_active {
+                            continue;
+                        }
+                        
+                        if current_detected != Some(app) {
+                            tracing::info!("New meeting detected ({}), showing prompt", app);
+                            {
+                                let mut state = state_for_detection.lock().await;
+                                state.meeting_detected = Some(app);
+                                state.prompt_active = true;
+                            }
+
+                            let config = crate::config::loader::load_config();
+                            let auto_prompt = config
+                                .as_ref()
+                                .map(|c| c.detection.auto_prompt)
+                                .unwrap_or(false);
+
+                            if auto_prompt {
+                                let state_clone = state_for_detection.clone();
+                                let window_title = window.title.clone();
+                                let timeout = config
+                                    .map(|c| c.detection.prompt_timeout_secs)
+                                    .unwrap_or(30);
+                                let tx_for_monitor = detection_tx_for_handler.clone();
+
+                                tokio::spawn(async move {
+                                    let title_for_prompt = window_title.clone();
+                                    let response = tokio::task::spawn_blocking(move || {
+                                        notification::prompt_meeting_detected(app, &title_for_prompt, timeout)
+                                    })
+                                    .await;
+
+                                    let mut state = state_clone.lock().await;
+                                    state.prompt_active = false;
+                                    
+                                    if let Ok(notification::PromptResponse::Record) = response {
+                                        if !state.recording {
+                                            let title = format!("{} Meeting", app);
+                                            match start_recording_internal(&mut state, title).await {
+                                                Ok(_) => {
+                                                    state.meeting_monitor_running = Some(
+                                                        start_meeting_window_monitor(app, tx_for_monitor)
+                                                    );
+                                                }
+                                                Err(e) => tracing::error!("Failed to auto-start recording: {}", e),
+                                            }
+                                        }
+                                    }
+                                });
+                            } else {
+                                let _ = notification::notify_meeting_detected(app, &window.title);
+                            }
+                        }
+                    }
+                }
+                DetectionEvent::MeetingWindowClosed { app } => {
+                    tracing::info!("Meeting window closed ({}), checking if should stop recording", app);
+                    let mut state = state_for_detection.lock().await;
+                    if state.recording && state.meeting_detected == Some(app) {
+                        tracing::info!("Auto-stopping recording due to meeting window closure");
+                        if let Some(running) = state.meeting_monitor_running.take() {
+                            running.store(false, Ordering::Relaxed);
+                        }
+                        let meeting_id = state.current_meeting.as_ref()
+                            .map(|m| m.id.to_string())
+                            .unwrap_or_default();
+                        
+                        let audio_path = state.audio_path.clone();
+                        let audio_running = state.audio_running.take();
+                        let segment_rx = state.segment_rx.take();
+                        let streaming_enabled = state.streaming_enabled;
+
+                        if let Some(running) = audio_running {
+                            running.store(false, Ordering::Relaxed);
+                        }
+
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+                        let segments = if let Some(rx) = segment_rx {
+                            rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        };
+
+                        if let Some(meeting) = &mut state.current_meeting {
+                            let ended = chrono::Utc::now();
+                            meeting.ended_at = Some(ended);
+                            let duration_secs = (ended.timestamp() - meeting.started_at.timestamp()) as u64;
+                            meeting.duration_seconds = Some(duration_secs);
+                            meeting.status = crate::storage::MeetingStatus::Processing;
+
+                            if let Some(ref path) = audio_path {
+                                meeting.audio_path = Some(path.clone());
+                            }
+
+                            if let Ok(db_path) = database_path() {
+                                if let Ok(db) = Database::open(&db_path) {
+                                    let _ = db.update_meeting(meeting);
+                                    if !segments.is_empty() {
+                                        let _ = db.insert_transcript_segments(&meeting.id, &segments);
+                                    }
+                                }
+                            }
+
+                            let duration_mins = meeting.duration_seconds.unwrap_or(0) / 60;
+                            let meeting_title = meeting.title.clone();
+                            let meeting_id_clone = meeting_id.clone();
+                            
+                            let _ = notification::notify_recording_stopped(&meeting_title, duration_mins);
+                            
+                            if let Some(path) = audio_path {
+                                if streaming_enabled && !segments.is_empty() {
+                                    std::thread::spawn(move || {
+                                        run_background_diarization(meeting_id_clone, path);
+                                    });
+                                } else {
+                                    std::thread::spawn(move || {
+                                        run_background_transcription_and_diarization(meeting_id_clone, path);
+                                    });
+                                }
+                            }
+                        }
+
+                        state.recording = false;
+                        state.current_meeting = None;
+                        state.audio_path = None;
+                        state.streaming_enabled = false;
+                        state.meeting_detected = None;
+                    }
+                }
             }
         }
     });
 
     if is_hyprland_running() {
-        let monitor = HyprlandMonitor::new(detection_tx);
+        tracing::info!("Hyprland detected, starting window monitor");
+        let poll_interval = crate::config::loader::load_config()
+            .map(|c| c.detection.poll_interval_secs)
+            .unwrap_or(5);
+        let monitor = HyprlandMonitor::with_poll_interval(detection_tx, poll_interval);
         tokio::spawn(async move {
+            tracing::info!("Hyprland monitor task started");
             if let Err(e) = monitor.start_monitoring().await {
                 tracing::error!("Hyprland monitoring error: {}", e);
             }
+            tracing::warn!("Hyprland monitor task ended");
         });
+    } else {
+        tracing::warn!("Hyprland not detected, window monitoring disabled");
     }
 
     while !shutdown.load(Ordering::Relaxed) {
@@ -174,53 +396,35 @@ async fn handle_request(
 
         DaemonRequest::StartRecording { title } => {
             let mut state = state.lock().await;
-            if state.recording {
-                return DaemonResponse::Error {
-                    message: "Already recording".to_string(),
-                };
-            }
-
             let title = title.unwrap_or_else(|| "Untitled Meeting".to_string());
-            let mut meeting = Meeting::new(title.clone());
-            let meeting_id = meeting.id.to_string();
 
-            let audio_path = match setup_recording_path(&meeting_id).await {
-                Ok(path) => path,
-                Err(e) => {
-                    tracing::error!("Failed to set up recording directory: {}", e);
-                    return DaemonResponse::Error {
-                        message: format!("Failed to set up recording: {}", e),
-                    };
-                }
-            };
-            meeting.audio_path = Some(audio_path.clone());
-
-            match start_audio_recording(&mut state, audio_path.clone()).await {
-                Ok(_) => {
-                    tracing::info!("Audio recording started for meeting {}", meeting_id);
-                }
-                Err(e) => {
-                    tracing::error!("Failed to start audio recording: {}", e);
-                    return DaemonResponse::Error {
-                        message: format!("Failed to start audio recording: {}", e),
-                    };
-                }
-            }
-
-            if let Ok(db_path) = database_path() {
-                if let Ok(db) = Database::open(&db_path) {
-                    if let Err(e) = db.insert_meeting(&meeting) {
-                        tracing::error!("Failed to save meeting to database: {}", e);
+            match start_recording_internal(&mut state, title).await {
+                Ok(meeting_id) => {
+                    tracing::info!("Recording started, checking for meeting windows. meeting_detected={:?}", state.meeting_detected);
+                    let detected_app = state.meeting_detected.or_else(|| {
+                        find_any_meeting_window()
+                    });
+                    
+                    if let Some(app) = detected_app {
+                        state.meeting_detected = Some(app);
+                        if let Some(tx) = state.detection_tx.clone() {
+                            tracing::info!("Starting meeting window monitor for manual recording (detected: {})", app);
+                            state.meeting_monitor_running = Some(start_meeting_window_monitor(app, tx));
+                        } else {
+                            tracing::warn!("No detection_tx available, cannot start monitor");
+                        }
+                    } else {
+                        tracing::info!("No meeting window detected, monitor not started");
                     }
+                    DaemonResponse::RecordingStarted { meeting_id }
                 }
+                Err(MuesliError::AlreadyRecording) => DaemonResponse::Error {
+                    message: "Already recording".to_string(),
+                },
+                Err(e) => DaemonResponse::Error {
+                    message: format!("Failed to start recording: {}", e),
+                },
             }
-
-            state.recording = true;
-            state.current_meeting = Some(meeting);
-
-            let _ = notification::notify_recording_started(&title);
-
-            DaemonResponse::RecordingStarted { meeting_id }
         }
 
         DaemonRequest::StopRecording => {
@@ -243,6 +447,10 @@ async fn handle_request(
             let audio_running = state.audio_running.take();
             let segment_rx = state.segment_rx.take();
             let streaming_enabled = state.streaming_enabled;
+
+            if let Some(running) = state.meeting_monitor_running.take() {
+                running.store(false, Ordering::Relaxed);
+            }
 
             if let Some(running) = audio_running {
                 running.store(false, Ordering::Relaxed);
@@ -327,6 +535,36 @@ async fn handle_request(
             DaemonResponse::Ok
         }
     }
+}
+
+async fn start_recording_internal(state: &mut DaemonState, title: String) -> Result<String> {
+    if state.recording {
+        return Err(MuesliError::AlreadyRecording);
+    }
+
+    let mut meeting = Meeting::new(title.clone());
+    let meeting_id = meeting.id.to_string();
+
+    let audio_path = setup_recording_path(&meeting_id).await?;
+    meeting.audio_path = Some(audio_path.clone());
+
+    start_audio_recording(state, audio_path.clone()).await?;
+    tracing::info!("Audio recording started for meeting {}", meeting_id);
+
+    if let Ok(db_path) = database_path() {
+        if let Ok(db) = Database::open(&db_path) {
+            if let Err(e) = db.insert_meeting(&meeting) {
+                tracing::error!("Failed to save meeting to database: {}", e);
+            }
+        }
+    }
+
+    state.recording = true;
+    state.current_meeting = Some(meeting);
+
+    let _ = notification::notify_recording_started(&title);
+
+    Ok(meeting_id)
 }
 
 async fn setup_recording_path(meeting_id: &str) -> Result<PathBuf> {
@@ -853,6 +1091,68 @@ fn load_wav_samples(path: &PathBuf) -> Result<Vec<f32>> {
     } else {
         Ok(samples)
     }
+}
+
+fn find_any_meeting_window() -> Option<MeetingApp> {
+    tracing::info!("Searching for meeting windows...");
+    let windows = match crate::detection::hyprland::list_all_windows() {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::error!("Failed to list windows: {}", e);
+            return None;
+        }
+    };
+    
+    tracing::info!("Found {} windows, checking for meeting apps", windows.len());
+    for window in &windows {
+        tracing::debug!("Checking window: class='{}' title='{}'", window.class, window.title);
+        if let Some(app) = crate::detection::patterns::detect_meeting_app(&window.class, &window.title) {
+            tracing::info!("Found meeting window: {} ({} - {})", app, window.class, window.title);
+            return Some(app);
+        }
+    }
+    
+    tracing::info!("No meeting windows found");
+    None
+}
+
+fn start_meeting_window_monitor(
+    app: MeetingApp,
+    detection_tx: mpsc::Sender<DetectionEvent>,
+) -> Arc<AtomicBool> {
+    let monitor_running = Arc::new(AtomicBool::new(true));
+    let monitor_running_clone = monitor_running.clone();
+    
+    tracing::info!("Starting meeting window monitor for {}", app);
+    
+    tokio::spawn(async move {
+        let check_interval = std::time::Duration::from_secs(3);
+        
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        tracing::debug!("Meeting window monitor active for {}", app);
+        
+        while monitor_running_clone.load(Ordering::Relaxed) {
+            tokio::time::sleep(check_interval).await;
+            
+            if !monitor_running_clone.load(Ordering::Relaxed) {
+                tracing::debug!("Monitor flag set to false, stopping");
+                break;
+            }
+            
+            let window_exists = crate::detection::hyprland::meeting_window_exists(app);
+            tracing::trace!("Meeting window check for {}: exists={}", app, window_exists);
+            
+            if !window_exists {
+                tracing::info!("Meeting window for {} no longer exists, triggering auto-stop", app);
+                let _ = detection_tx.send(DetectionEvent::MeetingWindowClosed { app }).await;
+                break;
+            }
+        }
+        
+        tracing::debug!("Meeting window monitor stopped for {}", app);
+    });
+    
+    monitor_running
 }
 
 #[cfg(test)]

@@ -169,6 +169,12 @@ pub struct DetectionConfig {
     /// Enable automatic meeting detection
     #[serde(default = "default_true")]
     pub auto_detect: bool,
+    /// Show interactive prompt when meeting detected (with Record/Skip buttons)
+    #[serde(default = "default_true")]
+    pub auto_prompt: bool,
+    /// Timeout for the recording prompt in seconds (0 = no timeout)
+    #[serde(default = "default_prompt_timeout")]
+    pub prompt_timeout_secs: u64,
     /// Debounce time for window switches (ms)
     #[serde(default = "default_debounce")]
     pub debounce_ms: u64,
@@ -181,6 +187,8 @@ impl Default for DetectionConfig {
     fn default() -> Self {
         Self {
             auto_detect: true,
+            auto_prompt: true,
+            prompt_timeout_secs: 30,
             debounce_ms: 500,
             poll_interval_secs: 30,
         }
@@ -235,6 +243,10 @@ fn default_poll_interval() -> u64 {
     30
 }
 
+fn default_prompt_timeout() -> u64 {
+    30
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +287,8 @@ mod tests {
     fn test_detection_config_defaults() {
         let detection = DetectionConfig::default();
         assert!(detection.auto_detect);
+        assert!(detection.auto_prompt);
+        assert_eq!(detection.prompt_timeout_secs, 30);
         assert_eq!(detection.debounce_ms, 500);
         assert_eq!(detection.poll_interval_secs, 30);
     }

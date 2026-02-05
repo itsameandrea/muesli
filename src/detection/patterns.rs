@@ -11,8 +11,11 @@ pub fn detect_meeting_app(class: &str, title: &str) -> Option<MeetingApp> {
     }
 
     // Google Meet (browser-based)
+    // Matches: "meet.google.com", "Google Meet", or active call "Meet – abc-xyz" in browser
     if title_lower.contains("meet.google.com")
         || (title_lower.contains("google meet") && !title_lower.contains("calendar"))
+        || (is_browser(class)
+            && (title_lower.starts_with("meet –") || title_lower.starts_with("meet -")))
     {
         return Some(MeetingApp::GoogleMeet);
     }
@@ -75,11 +78,15 @@ mod tests {
     #[test]
     fn test_detect_google_meet() {
         assert_eq!(
-            detect_meeting_app("google-chrome", "Meet - abc-defg-hij - Google Chrome"),
-            None // This won't match because class doesn't contain "meet"
+            detect_meeting_app("firefox", "meet.google.com - Firefox"),
+            Some(MeetingApp::GoogleMeet)
         );
         assert_eq!(
-            detect_meeting_app("firefox", "meet.google.com - Firefox"),
+            detect_meeting_app("chromium", "Meet – nga-fhgo-jph - Chromium"),
+            Some(MeetingApp::GoogleMeet)
+        );
+        assert_eq!(
+            detect_meeting_app("chrome", "Meet - abc-defg-hij - Google Chrome"),
             Some(MeetingApp::GoogleMeet)
         );
     }

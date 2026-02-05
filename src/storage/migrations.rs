@@ -101,6 +101,19 @@ fn migrate_v2(conn: &Connection) -> Result<()> {
 }
 
 fn migrate_v3(conn: &Connection) -> Result<()> {
+    let has_meeting_notes: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('summaries') WHERE name = 'meeting_notes'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+
+    if has_meeting_notes {
+        set_schema_version(conn, 3)?;
+        return Ok(());
+    }
+
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS summaries_new (
@@ -112,7 +125,7 @@ fn migrate_v3(conn: &Connection) -> Result<()> {
         
         INSERT OR IGNORE INTO summaries_new (meeting_id, meeting_notes, generated_at)
         SELECT meeting_id, 
-               COALESCE(summary, markdown, meeting_notes, ''),
+               COALESCE(summary, markdown, ''),
                generated_at 
         FROM summaries;
         

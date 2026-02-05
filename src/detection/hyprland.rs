@@ -60,18 +60,22 @@ impl HyprlandMonitor {
     }
 
     async fn run_event_listener(event_tx: mpsc::Sender<DetectionEvent>) -> Result<()> {
+        tracing::info!("Creating Hyprland async event listener");
         let mut listener = AsyncEventListener::new();
 
         let tx = event_tx.clone();
         listener.add_active_window_changed_handler(move |data| {
             let tx = tx.clone();
             Box::pin(async move {
+                tracing::debug!("Hyprland event received: {:?}", data);
                 if let Some(window_data) = data {
                     let window_info = WindowInfo {
-                        class: window_data.class,
-                        title: window_data.title,
+                        class: window_data.class.clone(),
+                        title: window_data.title.clone(),
                         pid: None,
                     };
+
+                    tracing::info!("Window change event: {} - {}", window_data.class, window_data.title);
 
                     let event = DetectionEvent::WindowChanged {
                         window: window_info,
@@ -84,19 +88,23 @@ impl HyprlandMonitor {
             })
         });
 
+        tracing::info!("Starting Hyprland event listener");
         listener
             .start_listener_async()
             .await
             .map_err(|e| MuesliError::HyprlandIpc(format!("Event listener failed: {}", e)))?;
 
+        tracing::warn!("Hyprland event listener stopped");
         Ok(())
     }
 
     async fn poll_active_window(event_tx: mpsc::Sender<DetectionEvent>, interval_secs: u64) {
         let mut last_window: Option<String> = None;
+        tracing::info!("Starting window polling with {}s interval", interval_secs);
 
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
+            tracing::trace!("Polling active window...");
 
             match Self::get_active_window() {
                 Ok(Some(window)) => {
@@ -147,6 +155,23 @@ pub fn list_all_windows() -> Result<Vec<WindowInfo>> {
             pid: Some(c.pid),
         })
         .collect())
+}
+
+pub fn meeting_window_exists(app: crate::detection::MeetingApp) -> bool {
+    let windows = match list_all_windows() {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!("Failed to list windows for meeting check: {}", e);
+            return true;
+        }
+    };
+
+    let exists = windows.iter().any(|w| {
+        crate::detection::patterns::detect_meeting_app(&w.class, &w.title) == Some(app)
+    });
+    
+    tracing::trace!("Checking if {} window exists among {} windows: {}", app, windows.len(), exists);
+    exists
 }
 
 #[cfg(test)]

@@ -54,4 +54,7 @@ pub enum DetectionEvent {
     WindowChanged {
         window: WindowInfo,
     },
+    MeetingWindowClosed {
+        app: MeetingApp,
+    },
 }
