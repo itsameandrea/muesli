@@ -122,7 +122,7 @@ pub async fn run_daemon() -> Result<()> {
                                     tracing::info!("User clicked Record, starting recording...");
                                     let mut state = state_clone.lock().await;
                                     if !state.recording {
-                                        let title = format!("{} Meeting", app);
+                                        let title = "Untitled Meeting".to_string();
                                         match start_recording_internal(&mut state, title).await {
                                             Ok(id) => {
                                                 tracing::info!("Recording started: {}", id);
@@ -207,7 +207,7 @@ pub async fn run_daemon() -> Result<()> {
                                     
                                     if let Ok(notification::PromptResponse::Record) = response {
                                         if !state.recording {
-                                            let title = format!("{} Meeting", app);
+                                            let title = "Untitled Meeting".to_string();
                                             match start_recording_internal(&mut state, title).await {
                                                 Ok(_) => {
                                                     state.meeting_monitor_running = Some(
