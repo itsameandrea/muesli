@@ -529,6 +529,32 @@ Recommended config file permissions:
 chmod 600 ~/.config/muesli/config.toml
 ```
 
+## Uninstallation
+
+To completely remove muesli:
+
+```bash
+muesli uninstall
+```
+
+The uninstaller will:
+1. Stop the running daemon
+2. Disable and remove the systemd service
+3. Prompt to remove configuration (`~/.config/muesli/`)
+4. Prompt to remove data directory (`~/.local/share/muesli/`) - recordings, models, database
+5. Print instructions to remove the binary (cannot self-delete)
+
+Manual removal:
+
+```bash
+systemctl --user stop muesli.service
+systemctl --user disable muesli.service
+rm ~/.config/systemd/user/muesli.service
+rm ~/.local/bin/muesli
+rm -rf ~/.config/muesli
+rm -rf ~/.local/share/muesli
+```
+
 ## Development
 
 ### Building from Source

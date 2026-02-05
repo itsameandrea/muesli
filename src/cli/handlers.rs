@@ -31,6 +31,7 @@ pub async fn handle_command(cli: Cli) -> Result<()> {
         Commands::Diarization { action } => handle_diarization(action).await,
         Commands::Summarize { id } => handle_summarize(&id).await,
         Commands::Setup => handle_setup().await,
+        Commands::Uninstall => handle_uninstall().await,
     }
 }
 
@@ -1184,6 +1185,153 @@ WantedBy=default.target
     println!("  4. Edit configuration if needed:");
     println!("     muesli config edit");
     println!();
+
+    Ok(())
+}
+
+async fn handle_uninstall() -> Result<()> {
+    use dialoguer::{theme::ColorfulTheme, Confirm};
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let install_dir = std::env::var("INSTALL_DIR")
+        .unwrap_or_else(|_| format!("{}/.local/bin", home));
+    let config_dir = config::loader::config_dir()?;
+    let data_dir = config::loader::data_dir()?;
+    let systemd_service = std::path::PathBuf::from(&home)
+        .join(".config/systemd/user/muesli.service");
+    let binary_path = std::path::PathBuf::from(&install_dir).join("muesli");
+
+    println!();
+    println!("==========================================");
+    println!("  muesli Uninstaller");
+    println!("==========================================");
+    println!();
+
+    let has_binary = binary_path.exists();
+    let has_service = systemd_service.exists();
+    let has_config = config_dir.exists();
+    let has_data = data_dir.exists();
+
+    if !has_binary && !has_service && !has_config && !has_data {
+        println!("muesli does not appear to be installed.");
+        return Ok(());
+    }
+
+    println!("This will remove:");
+    if has_binary {
+        println!("  - Binary: {}", binary_path.display());
+    }
+    if has_service {
+        println!("  - Systemd service: {}", systemd_service.display());
+    }
+    if has_config {
+        println!("  - Config directory: {}", config_dir.display());
+    }
+    if has_data {
+        println!("  - Data directory: {} (recordings, models, database)", data_dir.display());
+    }
+    println!();
+
+    let proceed = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("Proceed with uninstallation?")
+        .default(false)
+        .interact()
+        .unwrap_or(false);
+
+    if !proceed {
+        println!("Uninstallation cancelled.");
+        return Ok(());
+    }
+    println!();
+
+    println!("Stopping muesli daemon...");
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "stop", "muesli.service"])
+        .status();
+    let _ = std::process::Command::new("pkill")
+        .args(["-f", "muesli daemon"])
+        .status();
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    if has_service {
+        println!("Removing systemd service...");
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "disable", "muesli.service"])
+            .status();
+        let _ = std::fs::remove_file(&systemd_service);
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "daemon-reload"])
+            .status();
+    }
+
+    if has_config {
+        let remove_config = Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt(format!("Remove configuration directory ({})?", config_dir.display()))
+            .default(false)
+            .interact()
+            .unwrap_or(false);
+
+        if remove_config {
+            println!("Removing configuration...");
+            let _ = std::fs::remove_dir_all(&config_dir);
+        } else {
+            println!("Keeping configuration directory.");
+        }
+    }
+
+    if has_data {
+        println!();
+        println!("Data directory contains recordings, models, and meeting database.");
+        if let Ok(entries) = std::fs::read_dir(&data_dir) {
+            let size: u64 = entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.metadata().ok())
+                .map(|m| m.len())
+                .sum();
+            println!("  Approximate size: {} MB", size / 1024 / 1024);
+        }
+        println!();
+
+        let remove_data = Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt(format!("Remove data directory ({})?", data_dir.display()))
+            .default(false)
+            .interact()
+            .unwrap_or(false);
+
+        if remove_data {
+            println!("Removing data directory...");
+            let _ = std::fs::remove_dir_all(&data_dir);
+        } else {
+            println!("Keeping data directory.");
+        }
+    }
+
+    if has_binary {
+        println!();
+        println!("To complete uninstallation, remove the binary:");
+        println!("  rm {}", binary_path.display());
+        println!();
+        println!("(Cannot self-delete while running)");
+    }
+
+    println!();
+    println!("==========================================");
+    println!("  Uninstallation Complete");
+    println!("==========================================");
+    println!();
+
+    let config_kept = config_dir.exists();
+    let data_kept = data_dir.exists();
+    if config_kept || data_kept {
+        println!("Some directories were kept. Remove manually if needed:");
+        if config_kept {
+            println!("  rm -rf {}", config_dir.display());
+        }
+        if data_kept {
+            println!("  rm -rf {}", data_dir.display());
+        }
+        println!();
+    }
 
     Ok(())
 }

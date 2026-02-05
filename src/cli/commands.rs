@@ -106,6 +106,9 @@ pub enum Commands {
 
     /// Interactive setup wizard for first-time configuration
     Setup,
+
+    /// Uninstall muesli completely
+    Uninstall,
 }
 
 #[derive(Subcommand)]

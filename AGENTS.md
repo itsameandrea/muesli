@@ -256,6 +256,9 @@ let is_running = Arc::new(AtomicBool::new(true));
 # Setup wizard (interactive, recommended for first-time)
 muesli setup
 
+# Uninstall
+muesli uninstall
+
 # Recording
 muesli start [--title "Title"]
 muesli stop
