@@ -84,12 +84,15 @@ main() {
             exit 1
         fi
         
-        print_info "Building muesli..."
+        print_info "Building muesli from source..."
         cargo build --release
         
         mkdir -p "$INSTALL_DIR"
         cp target/release/muesli "$INSTALL_DIR/"
         chmod +x "$INSTALL_DIR/muesli"
+        
+        local built_version=$("$INSTALL_DIR/muesli" --version 2>/dev/null || echo "unknown")
+        print_info "Built: $built_version"
     else
         print_info "Installing muesli $version ($variant)..."
         
@@ -120,7 +123,9 @@ main() {
         fi
     fi
     
-    print_info "Installed muesli to $INSTALL_DIR/muesli"
+    local installed_version=$("$INSTALL_DIR/muesli" --version 2>/dev/null || echo "unknown")
+    print_info "Installed: $installed_version"
+    print_info "Location:  $INSTALL_DIR/muesli"
     
     if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
         echo ""

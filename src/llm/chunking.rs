@@ -1,8 +1,10 @@
+use crate::llm::catalog;
 use crate::transcription::TranscriptSegment;
 
 const CHARS_PER_TOKEN: usize = 4;
-const MAX_CHUNK_TOKENS: usize = 12000;
-const MAX_CHUNK_CHARS: usize = MAX_CHUNK_TOKENS * CHARS_PER_TOKEN;
+const LOCAL_MODEL_CONTEXT_TOKENS: usize = 12_000;
+const CLOUD_FALLBACK_CONTEXT_TOKENS: usize = 128_000;
+const PROMPT_OVERHEAD_TOKENS: usize = 2_000;
 
 pub struct TranscriptChunk {
     pub segments: Vec<TranscriptSegment>,
@@ -36,10 +38,45 @@ impl TranscriptChunk {
     }
 }
 
-pub fn chunk_transcript(segments: &[TranscriptSegment]) -> Vec<TranscriptChunk> {
-    let total_chars: usize = segments.iter().map(|s| s.text.len()).sum();
+pub fn resolve_context_limit(provider: &str, model: &str, config_override: usize) -> usize {
+    if config_override > 0 {
+        return config_override;
+    }
 
-    if total_chars <= MAX_CHUNK_CHARS {
+    if provider == "local" {
+        return LOCAL_MODEL_CONTEXT_TOKENS;
+    }
+
+    catalog::context_limit_for_model(provider, model)
+        .map(|c| c as usize)
+        .unwrap_or_else(|| {
+            tracing::debug!(
+                "Model {}/{} not in catalog, using {}K default",
+                provider,
+                model,
+                CLOUD_FALLBACK_CONTEXT_TOKENS / 1000
+            );
+            CLOUD_FALLBACK_CONTEXT_TOKENS
+        })
+}
+
+pub fn max_transcript_chars(context_tokens: usize) -> usize {
+    let available = context_tokens.saturating_sub(PROMPT_OVERHEAD_TOKENS);
+    available * CHARS_PER_TOKEN
+}
+
+pub fn needs_chunking(segments: &[TranscriptSegment], context_tokens: usize) -> bool {
+    let total_chars: usize = segments.iter().map(|s| s.text.len()).sum();
+    total_chars > max_transcript_chars(context_tokens)
+}
+
+pub fn chunk_transcript(
+    segments: &[TranscriptSegment],
+    context_tokens: usize,
+) -> Vec<TranscriptChunk> {
+    let max_chars = max_transcript_chars(context_tokens);
+
+    if segments.iter().map(|s| s.text.len()).sum::<usize>() <= max_chars {
         return vec![TranscriptChunk {
             segments: segments.to_vec(),
             chunk_index: 0,
@@ -56,7 +93,7 @@ pub fn chunk_transcript(segments: &[TranscriptSegment]) -> Vec<TranscriptChunk> 
     for segment in segments {
         let segment_chars = segment.text.len();
 
-        if current_chars + segment_chars > MAX_CHUNK_CHARS && !current_segments.is_empty() {
+        if current_chars + segment_chars > max_chars && !current_segments.is_empty() {
             chunks.push(current_segments);
             current_segments = Vec::new();
             current_chars = 0;
@@ -83,11 +120,6 @@ pub fn chunk_transcript(segments: &[TranscriptSegment]) -> Vec<TranscriptChunk> 
             total_chunks,
         })
         .collect()
-}
-
-pub fn needs_chunking(segments: &[TranscriptSegment]) -> bool {
-    let total_chars: usize = segments.iter().map(|s| s.text.len()).sum();
-    total_chars > MAX_CHUNK_CHARS
 }
 
 fn format_timestamp(ms: u64) -> String {
@@ -124,7 +156,7 @@ mod tests {
             make_segment(5000, "How are you", Some("SPEAKER_1")),
         ];
 
-        let chunks = chunk_transcript(&segments);
+        let chunks = chunk_transcript(&segments, 200_000);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].chunk_index, 0);
         assert_eq!(chunks[0].total_chunks, 1);
@@ -133,7 +165,16 @@ mod tests {
     #[test]
     fn test_needs_chunking_false_for_small() {
         let segments = vec![make_segment(0, "Short text", None)];
-        assert!(!needs_chunking(&segments));
+        assert!(!needs_chunking(&segments, 200_000));
+    }
+
+    #[test]
+    fn test_needs_chunking_respects_context_limit() {
+        let long_text = "x".repeat(60_000);
+        let segments = vec![make_segment(0, &long_text, None)];
+
+        assert!(needs_chunking(&segments, 12_000));
+        assert!(!needs_chunking(&segments, 200_000));
     }
 
     #[test]
@@ -145,7 +186,7 @@ mod tests {
             make_segment(120000, &long_text, Some("SPEAKER_0")),
         ];
 
-        let chunks = chunk_transcript(&segments);
+        let chunks = chunk_transcript(&segments, 12_000);
         assert!(chunks.len() > 1);
 
         for (i, chunk) in chunks.iter().enumerate() {
@@ -155,13 +196,26 @@ mod tests {
     }
 
     #[test]
+    fn test_large_transcript_fits_in_cloud_context() {
+        let long_text = "x".repeat(20000);
+        let segments = vec![
+            make_segment(0, &long_text, Some("SPEAKER_0")),
+            make_segment(60000, &long_text, Some("SPEAKER_1")),
+            make_segment(120000, &long_text, Some("SPEAKER_0")),
+        ];
+
+        let chunks = chunk_transcript(&segments, 200_000);
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
     fn test_chunk_format_with_speakers() {
         let segments = vec![
             make_segment(0, "Hello", Some("SPEAKER_0")),
             make_segment(5000, "Hi there", Some("SPEAKER_1")),
         ];
 
-        let chunks = chunk_transcript(&segments);
+        let chunks = chunk_transcript(&segments, 200_000);
         let formatted = chunks[0].format_for_prompt();
 
         assert!(formatted.contains("[00:00] SPEAKER_0: Hello"));
@@ -173,5 +227,27 @@ mod tests {
         assert_eq!(format_timestamp(0), "00:00");
         assert_eq!(format_timestamp(65000), "01:05");
         assert_eq!(format_timestamp(3665000), "01:01:05");
+    }
+
+    #[test]
+    fn test_max_transcript_chars() {
+        assert_eq!(max_transcript_chars(12_000), 40_000);
+        assert_eq!(max_transcript_chars(200_000), 792_000);
+    }
+
+    #[test]
+    fn test_resolve_context_limit_config_override() {
+        assert_eq!(
+            resolve_context_limit("anthropic", "whatever", 50_000),
+            50_000
+        );
+    }
+
+    #[test]
+    fn test_resolve_context_limit_local() {
+        assert_eq!(
+            resolve_context_limit("local", "some-model", 0),
+            LOCAL_MODEL_CONTEXT_TOKENS
+        );
     }
 }

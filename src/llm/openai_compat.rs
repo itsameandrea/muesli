@@ -1,75 +1,74 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-const OPENAI_API_URL: &str = "https://api.openai.com/v1/chat/completions";
-
 #[derive(Debug, Serialize)]
-struct OpenAIRequest {
+struct ChatRequest {
     model: String,
-    messages: Vec<OpenAIMessage>,
-    max_tokens: u32,
+    messages: Vec<ChatMessage>,
+    max_completion_tokens: u32,
     temperature: f32,
 }
 
 #[derive(Debug, Serialize)]
-struct OpenAIMessage {
+struct ChatMessage {
     role: String,
     content: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAIResponse {
-    choices: Vec<OpenAIChoice>,
+struct ChatResponse {
+    choices: Vec<ChatChoice>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAIChoice {
-    message: OpenAIResponseMessage,
+struct ChatChoice {
+    message: ChatResponseMessage,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAIResponseMessage {
+struct ChatResponseMessage {
     content: String,
 }
 
-pub async fn summarize_with_openai(api_key: &str, model: &str, prompt: &str) -> Result<String> {
+pub async fn summarize(base_url: &str, api_key: &str, model: &str, prompt: &str) -> Result<String> {
     let client = reqwest::Client::new();
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
-    let request = OpenAIRequest {
+    let request = ChatRequest {
         model: model.to_string(),
-        messages: vec![OpenAIMessage {
+        messages: vec![ChatMessage {
             role: "user".to_string(),
             content: prompt.to_string(),
         }],
-        max_tokens: 4096,
+        max_completion_tokens: 4096,
         temperature: 0.3,
     };
 
     let response = client
-        .post(OPENAI_API_URL)
+        .post(&url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("content-type", "application/json")
         .json(&request)
         .send()
         .await
-        .context("Failed to send request to OpenAI API")?;
+        .with_context(|| format!("Failed to send request to {}", url))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let error_text = response.text().await.unwrap_or_default();
-        anyhow::bail!("OpenAI API error {}: {}", status, error_text);
+        anyhow::bail!("API error {} from {}: {}", status, base_url, error_text);
     }
 
-    let openai_response: OpenAIResponse = response
+    let chat_response: ChatResponse = response
         .json()
         .await
-        .context("Failed to parse OpenAI API response")?;
+        .context("Failed to parse chat completion response")?;
 
-    openai_response
+    chat_response
         .choices
         .first()
         .map(|c| c.message.content.clone())
-        .context("No choices in OpenAI response")
+        .context("No choices in response")
 }
 
 #[cfg(test)]
@@ -78,13 +77,13 @@ mod tests {
 
     #[test]
     fn test_request_structure() {
-        let request = OpenAIRequest {
+        let request = ChatRequest {
             model: "gpt-4o".to_string(),
-            messages: vec![OpenAIMessage {
+            messages: vec![ChatMessage {
                 role: "user".to_string(),
                 content: "test".to_string(),
             }],
-            max_tokens: 4096,
+            max_completion_tokens: 4096,
             temperature: 0.3,
         };
 

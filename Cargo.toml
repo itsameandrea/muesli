@@ -1,6 +1,6 @@
 [package]
 name = "muesli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "AI-powered meeting note-taker for Linux/Hyprland"
 license = "MIT"
@@ -66,6 +66,11 @@ default = []
 vulkan = ["whisper-rs/vulkan"]
 cuda = ["whisper-rs/cuda"]
 metal = ["whisper-rs/metal"]
+
+[build-dependencies]
+ureq = "3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [dev-dependencies]
 tempfile = "3.10"

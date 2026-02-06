@@ -7,6 +7,7 @@ pub mod error;
 pub mod llm;
 pub mod notes;
 pub mod notification;
+pub mod qmd;
 pub mod storage;
 pub mod transcription;
 pub mod waybar;

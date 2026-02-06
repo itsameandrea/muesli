@@ -962,8 +962,8 @@ fn run_background_summarization(meeting_id: String) {
         }
     };
 
-    if cfg.llm.engine == "none" {
-        tracing::debug!("LLM engine is 'none', skipping summarization");
+    if cfg.llm.provider == "none" {
+        tracing::debug!("LLM provider is 'none', skipping summarization");
         return;
     }
 
@@ -1080,6 +1080,20 @@ fn generate_meeting_notes(
             updated_meeting.notes_path = Some(path);
             if let Err(e) = db.update_meeting(&updated_meeting) {
                 tracing::error!("Failed to update meeting with notes path: {}", e);
+            }
+
+            if let Ok(config) = crate::config::loader::load_config() {
+                if config.qmd.enabled && config.qmd.auto_index {
+                    let collection_name = config.qmd.collection_name.clone();
+                    std::thread::spawn(move || {
+                        tracing::info!("Auto-indexing meeting notes with qmd...");
+                        if let Err(e) = crate::qmd::indexer::update_index(&collection_name) {
+                            tracing::warn!("qmd auto-index failed: {}", e);
+                        } else {
+                            tracing::info!("qmd auto-index complete");
+                        }
+                    });
+                }
             }
         }
         Err(e) => {

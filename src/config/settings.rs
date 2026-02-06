@@ -27,6 +27,9 @@ pub struct MuesliConfig {
 
     #[serde(default)]
     pub waybar: WaybarConfig,
+
+    #[serde(default)]
+    pub qmd: QmdConfig,
 }
 
 impl Default for MuesliConfig {
@@ -40,6 +43,7 @@ impl Default for MuesliConfig {
             detection: DetectionConfig::default(),
             audio_cues: AudioCuesConfig::default(),
             waybar: WaybarConfig::default(),
+            qmd: QmdConfig::default(),
         }
     }
 }
@@ -109,6 +113,7 @@ impl Default for TranscriptionConfig {
 }
 
 impl TranscriptionConfig {
+    #[allow(dead_code)]
     pub fn effective_model(&self) -> &str {
         if !self.model.is_empty() && self.model != "base" {
             return &self.model;
@@ -124,30 +129,46 @@ impl TranscriptionConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
-    #[serde(default = "default_llm_engine")]
-    pub engine: String,
-    pub claude_api_key: Option<String>,
-    pub openai_api_key: Option<String>,
+    /// Provider: "none", "local", "anthropic", "openai", "moonshot", "openrouter"
+    #[serde(default = "default_llm_provider")]
+    pub provider: String,
+    /// Model name for the selected provider
+    #[serde(default)]
+    pub model: String,
+    /// API key for the selected provider
+    pub api_key: Option<String>,
+    /// Path to LM Studio CLI binary (auto-detect if empty, only used for "local" provider)
     #[serde(default)]
     pub local_lms_path: String,
-    #[serde(default = "default_local_model")]
-    pub local_model: String,
-    #[serde(default = "default_claude_model")]
-    pub claude_model: String,
-    #[serde(default = "default_openai_model")]
-    pub openai_model: String,
+    /// Override context window size in tokens (0 = auto-detect from models.dev)
+    #[serde(default)]
+    pub context_limit: usize,
 }
 
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
-            engine: "none".to_string(),
-            claude_api_key: None,
-            openai_api_key: None,
+            provider: "none".to_string(),
+            model: String::new(),
+            api_key: None,
             local_lms_path: String::new(),
-            local_model: String::new(),
-            claude_model: "claude-sonnet-4-20250514".to_string(),
-            openai_model: "gpt-4o".to_string(),
+            context_limit: 0,
+        }
+    }
+}
+
+impl LlmConfig {
+    /// Returns the default model for the configured provider
+    pub fn effective_model(&self) -> &str {
+        if !self.model.is_empty() {
+            return &self.model;
+        }
+        match self.provider.as_str() {
+            "anthropic" => "claude-sonnet-4-20250514",
+            "openai" => "gpt-4o",
+            "moonshot" => "kimi-k2.5",
+            "openrouter" => "anthropic/claude-sonnet-4",
+            _ => "",
         }
     }
 }
@@ -237,20 +258,8 @@ fn default_model() -> String {
     "base".to_string()
 }
 
-fn default_llm_engine() -> String {
+fn default_llm_provider() -> String {
     "none".to_string()
-}
-
-fn default_local_model() -> String {
-    String::new()
-}
-
-fn default_claude_model() -> String {
-    "claude-sonnet-4-20250514".to_string()
-}
-
-fn default_openai_model() -> String {
-    "gpt-4o".to_string()
 }
 
 fn default_log_level() -> String {
@@ -301,6 +310,33 @@ pub struct WaybarConfig {
     pub status_file: Option<std::path::PathBuf>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QmdConfig {
+    /// Enable qmd search integration
+    #[serde(default)]
+    pub enabled: bool,
+    /// Automatically index notes after meeting completion
+    #[serde(default = "default_true")]
+    pub auto_index: bool,
+    /// qmd collection name for meeting notes
+    #[serde(default = "default_qmd_collection")]
+    pub collection_name: String,
+}
+
+impl Default for QmdConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auto_index: true,
+            collection_name: "muesli-meetings".to_string(),
+        }
+    }
+}
+
+fn default_qmd_collection() -> String {
+    "muesli-meetings".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,7 +346,7 @@ mod tests {
         let config = MuesliConfig::default();
         assert_eq!(config.audio.sample_rate, 16000);
         assert_eq!(config.transcription.engine, "whisper");
-        assert_eq!(config.llm.engine, "none");
+        assert_eq!(config.llm.provider, "none");
     }
 
     #[test]
@@ -332,9 +368,20 @@ mod tests {
     #[test]
     fn test_llm_config_defaults() {
         let llm = LlmConfig::default();
-        assert_eq!(llm.engine, "none");
-        assert_eq!(llm.claude_model, "claude-sonnet-4-20250514");
+        assert_eq!(llm.provider, "none");
+        assert!(llm.model.is_empty());
+        assert!(llm.api_key.is_none());
         assert!(llm.local_lms_path.is_empty());
+    }
+
+    #[test]
+    fn test_llm_effective_model() {
+        let mut llm = LlmConfig::default();
+        llm.provider = "anthropic".to_string();
+        assert_eq!(llm.effective_model(), "claude-sonnet-4-20250514");
+
+        llm.model = "claude-opus-4-20250514".to_string();
+        assert_eq!(llm.effective_model(), "claude-opus-4-20250514");
     }
 
     #[test]

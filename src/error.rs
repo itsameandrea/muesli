@@ -73,6 +73,9 @@ pub enum MuesliError {
     #[allow(dead_code)]
     #[error("Not recording")]
     NotRecording,
+
+    #[error("Qmd error: {0}")]
+    Qmd(String),
 }
 
 pub type Result<T> = std::result::Result<T, MuesliError>;

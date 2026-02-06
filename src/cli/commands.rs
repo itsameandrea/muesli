@@ -1,10 +1,17 @@
 use clap::{Parser, Subcommand};
 
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("MUESLI_VERSION_INFO"),
+    ")"
+);
+
 #[derive(Parser)]
 #[command(name = "muesli")]
 #[command(
     author,
-    version,
+    version = VERSION,
     about = "AI-powered meeting note-taker for Linux/Hyprland"
 )]
 #[command(
@@ -80,14 +87,48 @@ pub enum Commands {
     /// Uninstall muesli completely
     Uninstall,
 
+    /// Rebuild and install the latest version from source
+    Update,
+
     /// Output status in Waybar JSON format (for custom module integration)
     Waybar,
 
-    /// Re-process a meeting (transcription + summarization)
+    /// Re-process a meeting (re-summarize, or full re-transcribe with --clean)
     Redo {
         /// Meeting ID (interactive selection if omitted)
         id: Option<String>,
+        /// Re-transcribe and re-diarize from scratch
+        #[arg(long)]
+        clean: bool,
     },
+
+    /// Search across meeting notes using qmd
+    Search {
+        /// Search query (omit for subcommands)
+        query: Option<String>,
+        /// Number of results
+        #[arg(short = 'n', long, default_value = "5")]
+        limit: usize,
+        /// Use keyword search only (faster, no AI reranking)
+        #[arg(long)]
+        keyword: bool,
+        #[command(subcommand)]
+        action: Option<SearchCommands>,
+    },
+
+    /// Ask a question about your meetings (search + LLM answer)
+    Ask {
+        /// Your question (multiple words allowed)
+        question: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SearchCommands {
+    /// Re-index all meeting notes with qmd
+    Reindex,
+    /// Show qmd index status
+    Status,
 }
 
 #[derive(Subcommand)]

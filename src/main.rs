@@ -10,6 +10,7 @@ mod error;
 mod llm;
 mod notes;
 mod notification;
+mod qmd;
 mod storage;
 mod transcription;
 mod waybar;

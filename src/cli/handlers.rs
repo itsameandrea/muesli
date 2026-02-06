@@ -26,8 +26,16 @@ pub async fn handle_command(cli: Cli) -> Result<()> {
         Commands::Audio { action } => handle_audio(action).await,
         Commands::Setup => handle_setup().await,
         Commands::Uninstall => handle_uninstall().await,
+        Commands::Update => handle_update().await,
         Commands::Waybar => handle_waybar().await,
-        Commands::Redo { id } => handle_redo(id).await,
+        Commands::Redo { id, clean } => handle_redo(id, clean).await,
+        Commands::Search {
+            query,
+            limit,
+            keyword,
+            action,
+        } => handle_search(query, limit, keyword, action).await,
+        Commands::Ask { question } => handle_ask(question).await,
     }
 }
 
@@ -518,7 +526,7 @@ async fn handle_setup() -> Result<()> {
     println!("==========================================");
     println!();
 
-    println!("[1/10] Creating directories...");
+    println!("[1/11] Creating directories...");
     config::loader::ensure_directories()?;
     let config_dir = config::loader::config_dir()?;
     let data_dir = config::loader::data_dir()?;
@@ -528,7 +536,7 @@ async fn handle_setup() -> Result<()> {
     println!("  Models: {}", models_dir.display());
     println!();
 
-    println!("[2/10] Initializing configuration...");
+    println!("[2/11] Initializing configuration...");
     let config_path = config::loader::config_path()?;
     if config_path.exists() {
         println!(
@@ -544,7 +552,7 @@ async fn handle_setup() -> Result<()> {
     }
     println!();
 
-    println!("[3/10] GPU Acceleration");
+    println!("[3/11] GPU Acceleration");
     println!("  GPU acceleration provides faster transcription.");
     println!();
 
@@ -561,7 +569,7 @@ async fn handle_setup() -> Result<()> {
     );
     println!();
 
-    println!("[4/10] Transcription Model Selection");
+    println!("[4/11] Transcription Model Selection");
     println!();
 
     let whisper_models = vec![
@@ -674,7 +682,7 @@ async fn handle_setup() -> Result<()> {
     }
     println!();
 
-    println!("[5/10] Speaker Diarization Model");
+    println!("[5/11] Speaker Diarization Model");
     let diar_manager = DiarizationModelManager::new(models_dir.clone());
     let diar_model = DiarizationModel::SortformerV2;
 
@@ -711,7 +719,7 @@ async fn handle_setup() -> Result<()> {
     }
     println!();
 
-    println!("[6/10] Streaming Transcription (Optional)");
+    println!("[6/11] Streaming Transcription (Optional)");
     println!("  Nemotron streaming enables real-time transcription during recording.");
     println!("  No wait time after stopping - transcription is already done!");
     println!();
@@ -754,100 +762,78 @@ async fn handle_setup() -> Result<()> {
     }
     println!();
 
-    println!("[7/10] LLM for Meeting Notes");
+    println!("[7/11] LLM for Meeting Notes");
     println!("  An LLM generates meeting summaries and notes from transcripts.");
-    println!("  LM Studio provides free local LLM support.");
     println!();
 
-    let lms_path = find_lms_binary();
-    if let Some(ref lms) = lms_path {
-        println!("  Found LM Studio CLI at: {}", lms);
+    let provider_options = vec![
+        "LM Studio (local, free)",
+        "Anthropic (Claude)",
+        "OpenAI (GPT)",
+        "Moonshot (Kimi)",
+        "OpenRouter (multi-provider)",
+        "Skip LLM setup",
+    ];
 
-        let output = std::process::Command::new(lms)
-            .args(["ls", "--json"])
-            .output();
+    let provider_selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select an LLM provider")
+        .items(&provider_options)
+        .default(0)
+        .interact()
+        .unwrap_or(provider_options.len() - 1);
 
-        let mut models: Vec<String> = vec![];
-        if let Ok(out) = output {
-            if out.status.success() {
-                if let Ok(text) = String::from_utf8(out.stdout) {
-                    for line in text.lines() {
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
-                            if let Some(path) = json.get("path").and_then(|p| p.as_str()) {
-                                let name = std::path::Path::new(path)
-                                    .file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or(path);
-                                if !name.contains("embedding") && !name.contains("Embedding") {
-                                    models.push(name.to_string());
-                                }
-                            }
-                        }
+    match provider_selection {
+        0 => {
+            let lms_path = find_lms_binary();
+            if let Some(ref lms) = lms_path {
+                println!("  Found LM Studio CLI at: {}", lms);
+
+                let models = discover_lms_models(lms);
+
+                if !models.is_empty() {
+                    println!("  Found {} LLM model(s)", models.len());
+                    println!();
+
+                    let mut options: Vec<String> = models.clone();
+                    options.push("Skip LLM setup".to_string());
+
+                    let selection = Select::with_theme(&ColorfulTheme::default())
+                        .with_prompt("Select a model")
+                        .items(&options)
+                        .default(0)
+                        .interact()
+                        .unwrap_or(options.len() - 1);
+
+                    if selection < models.len() {
+                        update_llm_config("local", &models[selection], None)?;
+                        println!("  LLM configured: {} (via LM Studio)", models[selection]);
+                    } else {
+                        update_llm_config("none", "", None)?;
+                        println!("  LLM disabled");
                     }
+                } else {
+                    println!("  No LLM models found in LM Studio.");
+                    println!("  Download a model in LM Studio first, then run setup again.");
+                    update_llm_config("none", "", None)?;
                 }
-            }
-        }
-
-        if models.is_empty() {
-            let output = std::process::Command::new(lms).args(["ls"]).output();
-            if let Ok(out) = output {
-                if out.status.success() {
-                    let text = String::from_utf8_lossy(&out.stdout);
-                    for line in text.lines() {
-                        let trimmed = line.trim();
-                        if !trimmed.is_empty()
-                            && !trimmed.starts_with("LLM")
-                            && !trimmed.starts_with("EMBEDDING")
-                            && !trimmed.starts_with("---")
-                            && !trimmed.starts_with("You have")
-                            && !trimmed.contains("embedding")
-                            && !trimmed.contains("Embedding")
-                        {
-                            if let Some(name) = trimmed.split_whitespace().next() {
-                                models.push(name.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if !models.is_empty() {
-            println!("  Found {} LLM model(s) in LM Studio", models.len());
-            println!();
-
-            let mut options: Vec<String> = models.iter().map(|m| m.clone()).collect();
-            options.push("Skip LLM setup".to_string());
-
-            let selection = Select::with_theme(&ColorfulTheme::default())
-                .with_prompt("Select an LLM model for meeting notes")
-                .items(&options)
-                .default(0)
-                .interact()
-                .unwrap_or(options.len() - 1);
-
-            if selection < models.len() {
-                let model = &models[selection];
-                update_llm_config("local", model)?;
-                println!("  LLM configured: {} (via LM Studio)", model);
             } else {
-                update_llm_config("none", "")?;
-                println!("  LLM disabled");
+                println!("  LM Studio not found.");
+                println!("  Install from https://lmstudio.ai for local LLM support.");
+                update_llm_config("none", "", None)?;
             }
-        } else {
-            println!("  No LLM models found in LM Studio.");
-            println!("  Download a model in LM Studio first, then run setup again.");
-            update_llm_config("none", "")?;
         }
-    } else {
-        println!("  LM Studio not found.");
-        println!("  Install from https://lmstudio.ai for local LLM support.");
-        println!("  Or configure Claude/OpenAI API keys in config.toml");
-        update_llm_config("none", "")?;
+        1 => setup_cloud_provider("anthropic", "Anthropic", "claude-sonnet-4-20250514")?,
+        2 => setup_cloud_provider("openai", "OpenAI", "gpt-4o")?,
+        3 => setup_cloud_provider("moonshot", "Moonshot (Kimi)", "kimi-k2.5")?,
+        4 => setup_cloud_provider("openrouter", "OpenRouter", "anthropic/claude-sonnet-4")?,
+        _ => {
+            update_llm_config("none", "", None)?;
+            println!("  LLM disabled");
+        }
     }
     println!();
 
-    println!("[8/10] Meeting Detection");
+    println!("[8/11] Meeting Detection");
     println!("  Auto-detection monitors your windows for meeting apps (Zoom, Meet, Teams, etc.)");
     println!("  When detected, a notification prompt asks if you want to record.");
     println!();
@@ -866,7 +852,7 @@ async fn handle_setup() -> Result<()> {
     );
     println!();
 
-    println!("[9/10] Audio Cues");
+    println!("[9/11] Audio Cues");
     println!("  Play a sound when recording starts and stops.");
     println!();
 
@@ -887,7 +873,7 @@ async fn handle_setup() -> Result<()> {
     );
     println!();
 
-    println!("[10/10] Systemd Service");
+    println!("[10/11] Systemd Service");
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let systemd_dir = std::path::PathBuf::from(&home).join(".config/systemd/user");
 
@@ -941,6 +927,54 @@ WantedBy=default.target
     }
     println!();
 
+    println!("[11/11] qmd Search Integration");
+    println!("  qmd enables semantic search across all your meeting notes.");
+    println!("  Install: bun install -g https://github.com/tobi/qmd");
+    println!();
+
+    if crate::qmd::indexer::is_qmd_installed() {
+        println!("  qmd detected!");
+        println!();
+
+        let enable_qmd = Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt("Enable qmd search for meeting notes?")
+            .default(true)
+            .interact()
+            .unwrap_or(false);
+
+        if enable_qmd {
+            update_qmd_config(true, true, "muesli-meetings")?;
+
+            let notes_dir = config::loader::notes_dir()?;
+            println!("  Setting up qmd collection...");
+
+            if let Err(e) = crate::qmd::indexer::setup_collection(&notes_dir, "muesli-meetings") {
+                println!("  Warning: Collection setup failed: {}", e);
+                println!("  You can retry later with: muesli search reindex");
+            } else {
+                println!("  Collection created: muesli-meetings");
+
+                println!("  Running initial index (this may take a moment)...");
+                if let Err(e) = crate::qmd::indexer::update_index("muesli-meetings") {
+                    println!("  Warning: Initial indexing failed: {}", e);
+                    println!("  You can retry later with: muesli search reindex");
+                } else {
+                    println!("  Initial indexing complete!");
+                }
+            }
+        } else {
+            update_qmd_config(false, false, "muesli-meetings")?;
+            println!("  qmd search disabled.");
+        }
+    } else {
+        println!("  qmd not found. Install it to enable meeting search:");
+        println!("  bun install -g https://github.com/tobi/qmd");
+        println!();
+        println!("  After installing, run 'muesli setup' again to configure.");
+        update_qmd_config(false, false, "muesli-meetings")?;
+    }
+    println!();
+
     println!("==========================================");
     println!("  Setup Complete!");
     println!("==========================================");
@@ -959,6 +993,78 @@ WantedBy=default.target
     println!("  4. Edit configuration if needed:");
     println!("     muesli config edit");
     println!();
+
+    Ok(())
+}
+
+async fn handle_update() -> Result<()> {
+    let current_version = env!("CARGO_PKG_VERSION");
+    let version_info = env!("MUESLI_VERSION_INFO");
+    println!("Current: muesli {} ({})", current_version, version_info);
+    println!();
+
+    let repo_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| {
+            let mut dir = p.parent()?.to_path_buf();
+            // Walk up from the binary to find the repo (handles both target/release/ and ~/.local/bin/)
+            for _ in 0..5 {
+                if dir.join("Cargo.toml").exists() {
+                    return Some(dir);
+                }
+                dir = dir.parent()?.to_path_buf();
+            }
+            None
+        })
+        .or_else(|| {
+            // Fallback: check common source locations
+            let home = std::env::var("HOME").ok()?;
+            let candidates = [
+                format!("{}/Code/itsameandrea/muesli", home),
+                format!("{}/muesli", home),
+                format!("{}/src/muesli", home),
+            ];
+            candidates
+                .iter()
+                .map(std::path::PathBuf::from)
+                .find(|p| p.join("Cargo.toml").exists())
+        });
+
+    let repo_dir = match repo_dir {
+        Some(d) => d,
+        None => {
+            eprintln!("Could not find muesli source directory.");
+            eprintln!("Run from the source directory: cd /path/to/muesli && cargo install --path .");
+            return Ok(());
+        }
+    };
+
+    println!("Source:  {}", repo_dir.display());
+    println!("Building...");
+    println!();
+
+    let status = std::process::Command::new("cargo")
+        .args(["install", "--path", "."])
+        .current_dir(&repo_dir)
+        .status()
+        .map_err(|e| crate::error::MuesliError::Config(format!("Failed to run cargo: {}", e)))?;
+
+    if !status.success() {
+        eprintln!("Build failed.");
+        return Ok(());
+    }
+
+    println!();
+
+    let new_version = std::process::Command::new("muesli")
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    println!("Updated: {}", new_version);
 
     Ok(())
 }
@@ -1142,7 +1248,7 @@ async fn handle_waybar() -> Result<()> {
     Ok(())
 }
 
-async fn handle_redo(id: Option<String>) -> Result<()> {
+async fn handle_redo(id: Option<String>, clean: bool) -> Result<()> {
     let db_path = config::loader::database_path()?;
     let db = Database::open(&db_path)?;
 
@@ -1171,44 +1277,67 @@ async fn handle_redo(id: Option<String>) -> Result<()> {
     let config = config::loader::load_config()?;
     let models_dir = config::loader::models_dir()?;
 
-    println!("\n[1/3] Transcribing...");
-    let transcript = run_transcription(&config, &models_dir, audio_path)?;
-    println!("  {} segments transcribed", transcript.segments.len());
+    let existing_segments = db.get_transcript_segments(&meeting.id)?;
+    let needs_transcription = clean || existing_segments.is_empty();
 
-    db.delete_transcript_segments(&meeting.id)?;
-    db.insert_transcript_segments(&meeting.id, &transcript.segments)?;
+    if needs_transcription {
+        let step_count = if config.llm.provider != "none" { 3 } else { 2 };
 
-    println!("\n[2/3] Diarization (speaker identification)...");
-    let diarization_manager = DiarizationModelManager::new(models_dir.clone());
-    if diarization_manager.model_exists(DiarizationModel::SortformerV2) {
-        let model_path = diarization_manager.model_path(DiarizationModel::SortformerV2);
-        match run_diarization(audio_path, &model_path) {
-            Ok(speaker_segments) => {
-                let mut segments = db.get_transcript_segments(&meeting.id)?;
-                for seg in segments.iter_mut() {
-                    if let Some(speaker) = speaker_segments
-                        .iter()
-                        .find(|s| {
-                            let mid = (seg.start_ms + seg.end_ms) / 2;
-                            mid >= s.start_ms && mid <= s.end_ms
-                        })
-                        .map(|s| format!("SPEAKER_{}", s.speaker_id + 1))
-                    {
-                        seg.speaker = Some(speaker);
+        println!("\n[1/{}] Transcribing...", step_count);
+        let transcript = run_transcription(&config, &models_dir, audio_path)?;
+        println!("  {} segments transcribed", transcript.segments.len());
+
+        db.delete_transcript_segments(&meeting.id)?;
+        db.insert_transcript_segments(&meeting.id, &transcript.segments)?;
+
+        println!(
+            "\n[2/{}] Diarization (speaker identification)...",
+            step_count
+        );
+        let diarization_manager = DiarizationModelManager::new(models_dir.clone());
+        if diarization_manager.model_exists(DiarizationModel::SortformerV2) {
+            let model_path = diarization_manager.model_path(DiarizationModel::SortformerV2);
+            match run_diarization(audio_path, &model_path) {
+                Ok(speaker_segments) => {
+                    let mut segments = db.get_transcript_segments(&meeting.id)?;
+                    for seg in segments.iter_mut() {
+                        if let Some(speaker) = speaker_segments
+                            .iter()
+                            .find(|s| {
+                                let mid = (seg.start_ms + seg.end_ms) / 2;
+                                mid >= s.start_ms && mid <= s.end_ms
+                            })
+                            .map(|s| format!("SPEAKER_{}", s.speaker_id + 1))
+                        {
+                            seg.speaker = Some(speaker);
+                        }
                     }
+                    db.delete_transcript_segments(&meeting.id)?;
+                    db.insert_transcript_segments(&meeting.id, &segments)?;
+                    println!("  Speakers identified");
                 }
-                db.delete_transcript_segments(&meeting.id)?;
-                db.insert_transcript_segments(&meeting.id, &segments)?;
-                println!("  Speakers identified");
+                Err(e) => println!("  Skipped: {}", e),
             }
-            Err(e) => println!("  Skipped: {}", e),
+        } else {
+            println!("  Skipped (model not installed)");
+        }
+
+        if config.llm.provider != "none" {
+            println!("\n[3/{}] Summarizing...", step_count);
         }
     } else {
-        println!("  Skipped (model not installed)");
+        println!(
+            "\n  Using existing transcript ({} segments)",
+            existing_segments.len()
+        );
+        if clean {
+            println!("  (use --clean to re-transcribe from scratch)");
+        }
+        println!();
+        println!("Summarizing...");
     }
 
-    println!("\n[3/3] Summarizing...");
-    if config.llm.engine != "none" {
+    if config.llm.provider != "none" {
         let segments = db.get_transcript_segments(&meeting.id)?;
         let transcript = crate::transcription::Transcript::new(segments);
         match crate::llm::summarize_transcript(&config.llm, &transcript).await {
@@ -1242,6 +1371,67 @@ async fn handle_redo(id: Option<String>) -> Result<()> {
     Ok(())
 }
 
+async fn handle_search(
+    query: Option<String>,
+    limit: usize,
+    keyword: bool,
+    action: Option<SearchCommands>,
+) -> Result<()> {
+    match action {
+        Some(SearchCommands::Reindex) => {
+            let config = config::loader::load_config()?;
+            if !config.qmd.enabled {
+                eprintln!("qmd search is not enabled. Run 'muesli setup' to configure.");
+                return Ok(());
+            }
+            println!("Re-indexing meeting notes...");
+            match crate::qmd::reindex(&config.qmd.collection_name) {
+                Ok(()) => println!("Re-indexing complete."),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+        Some(SearchCommands::Status) => match crate::qmd::status() {
+            Ok(output) => print!("{}", output),
+            Err(e) => eprintln!("Error: {}", e),
+        },
+        None => {
+            if let Some(q) = query {
+                let config = config::loader::load_config()?;
+                if !config.qmd.enabled {
+                    eprintln!("qmd search is not enabled. Run 'muesli setup' to configure.");
+                    return Ok(());
+                }
+                match crate::qmd::search(&q, &config.qmd.collection_name, limit, keyword) {
+                    Ok(output) => {
+                        if output.trim().is_empty() {
+                            println!("No results found for: {}", q);
+                        } else {
+                            print!("{}", output);
+                        }
+                    }
+                    Err(e) => eprintln!("Error: {}", e),
+                }
+            } else {
+                eprintln!("Usage: muesli search <query>");
+                eprintln!("       muesli search reindex");
+                eprintln!("       muesli search status");
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_ask(question: Vec<String>) -> Result<()> {
+    if question.is_empty() {
+        eprintln!("Usage: muesli ask <your question>");
+        return Ok(());
+    }
+
+    let question_str = question.join(" ");
+    crate::qmd::ask(&question_str).await?;
+    Ok(())
+}
+
 fn select_meeting_with_audio(db: &Database) -> Result<String> {
     use dialoguer::{theme::ColorfulTheme, Select};
 
@@ -1252,10 +1442,10 @@ fn select_meeting_with_audio(db: &Database) -> Result<String> {
         .collect();
 
     if meetings.is_empty() {
-        return Err(
-            crate::error::MuesliError::Config("No meetings with audio files found".to_string())
-                .into(),
-        );
+        return Err(crate::error::MuesliError::Config(
+            "No meetings with audio files found".to_string(),
+        )
+        .into());
     }
 
     let items: Vec<String> = meetings
@@ -1306,8 +1496,8 @@ fn run_transcription(
         }
         "whisper" | _ => {
             let manager = ModelManager::new(models_dir.to_path_buf());
-            let model = WhisperModel::from_str(&config.transcription.model)
-                .unwrap_or(WhisperModel::Base);
+            let model =
+                WhisperModel::from_str(&config.transcription.model).unwrap_or(WhisperModel::Base);
 
             if !manager.model_exists(model) {
                 return Err(crate::error::MuesliError::Config(format!(
@@ -1318,8 +1508,10 @@ fn run_transcription(
             }
 
             let model_path = manager.model_path(model);
-            let engine =
-                crate::transcription::whisper::WhisperEngine::new(&model_path, config.transcription.use_gpu)?;
+            let engine = crate::transcription::whisper::WhisperEngine::new(
+                &model_path,
+                config.transcription.use_gpu,
+            )?;
             crate::transcription::whisper::transcribe_wav_file(&engine, audio_path)
         }
     }
@@ -1363,34 +1555,196 @@ fn load_wav_samples_for_diarization(path: &std::path::Path) -> Result<Vec<f32>> 
     }
 }
 
-fn update_llm_config(engine: &str, model: &str) -> Result<()> {
+fn update_llm_config(provider: &str, model: &str, api_key: Option<&str>) -> Result<()> {
     let config_path = config::loader::config_path()?;
     let content = std::fs::read_to_string(&config_path)?;
 
+    let has_llm_section = content.contains("[llm]");
     let mut in_llm = false;
-    let updated = content
+    let mut set_provider = false;
+    let mut set_model = false;
+    let mut set_api_key = false;
+    const REMOVE_LINE: &str = "\x00__REMOVE__\x00";
+
+    let mut updated: Vec<String> = content
         .lines()
         .map(|line| {
             let trimmed = line.trim();
             if trimmed == "[llm]" {
                 in_llm = true;
-            } else if trimmed.starts_with("[") && trimmed.ends_with("]") {
+            } else if trimmed.starts_with('[') && trimmed.ends_with(']') {
                 in_llm = false;
             }
 
-            if in_llm && trimmed.starts_with("engine =") {
-                format!("engine = \"{}\"", engine)
-            } else if in_llm && trimmed.starts_with("local_model =") {
-                format!("local_model = \"{}\"", model)
-            } else {
-                line.to_string()
+            if in_llm {
+                if trimmed.starts_with("provider =") || trimmed.starts_with("engine =") {
+                    set_provider = true;
+                    return format!("provider = \"{}\"", provider);
+                }
+                if trimmed.starts_with("model =") || trimmed.starts_with("local_model =") {
+                    set_model = true;
+                    return format!("model = \"{}\"", model);
+                }
+                if trimmed.starts_with("api_key =")
+                    || trimmed.starts_with("claude_api_key =")
+                    || trimmed.starts_with("openai_api_key =")
+                {
+                    set_api_key = true;
+                    if let Some(key) = api_key {
+                        return format!("api_key = \"{}\"", key);
+                    } else {
+                        return REMOVE_LINE.to_string();
+                    }
+                }
+                if trimmed.starts_with("claude_model =") || trimmed.starts_with("openai_model =") {
+                    return REMOVE_LINE.to_string();
+                }
             }
+            line.to_string()
         })
-        .collect::<Vec<_>>()
-        .join("\n");
+        .filter(|line| line != REMOVE_LINE)
+        .collect();
 
-    std::fs::write(&config_path, updated)?;
+    if !has_llm_section {
+        updated.push(String::new());
+        updated.push("[llm]".to_string());
+        updated.push(format!("provider = \"{}\"", provider));
+        updated.push(format!("model = \"{}\"", model));
+        if let Some(key) = api_key {
+            updated.push(format!("api_key = \"{}\"", key));
+        }
+    } else {
+        let llm_idx = updated.iter().position(|l| l.trim() == "[llm]");
+        if let Some(idx) = llm_idx {
+            let mut insert_at = idx + 1;
+            while insert_at < updated.len() {
+                let trimmed = updated[insert_at].trim();
+                if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                    break;
+                }
+                insert_at += 1;
+            }
+            if !set_api_key {
+                if let Some(key) = api_key {
+                    updated.insert(insert_at, format!("api_key = \"{}\"", key));
+                }
+            }
+            if !set_model {
+                updated.insert(insert_at, format!("model = \"{}\"", model));
+            }
+            if !set_provider {
+                updated.insert(insert_at, format!("provider = \"{}\"", provider));
+            }
+        }
+    }
+
+    std::fs::write(&config_path, updated.join("\n"))?;
     Ok(())
+}
+
+fn setup_cloud_provider(provider: &str, display_name: &str, default_model: &str) -> Result<()> {
+    use dialoguer::{theme::ColorfulTheme, Input, Select};
+
+    println!("  {} selected. An API key is required.", display_name);
+    println!();
+
+    let api_key: String = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt(format!("Enter your {} API key", display_name))
+        .interact_text()
+        .unwrap_or_default();
+
+    if api_key.trim().is_empty() {
+        println!("  No API key provided. LLM disabled.");
+        update_llm_config("none", "", None)?;
+        return Ok(());
+    }
+
+    let catalog_models = crate::llm::catalog::models_for_provider(provider);
+    let model = if catalog_models.is_empty() {
+        default_model.to_string()
+    } else {
+        let mut options: Vec<String> = catalog_models
+            .iter()
+            .map(|m| format!("{} ({})", m.name, m.id))
+            .collect();
+        options.push("Enter custom model ID".to_string());
+
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Select a model")
+            .items(&options)
+            .default(0)
+            .interact()
+            .unwrap_or(0);
+
+        if selection < catalog_models.len() {
+            catalog_models[selection].id.clone()
+        } else {
+            let custom: String = Input::with_theme(&ColorfulTheme::default())
+                .with_prompt("Enter model ID")
+                .default(default_model.to_string())
+                .interact_text()
+                .unwrap_or_else(|_| default_model.to_string());
+            custom
+        }
+    };
+
+    update_llm_config(provider, &model, Some(api_key.trim()))?;
+    println!("  LLM configured: {} (model: {})", display_name, model);
+    Ok(())
+}
+
+fn discover_lms_models(lms: &str) -> Vec<String> {
+    let mut models: Vec<String> = vec![];
+
+    let output = std::process::Command::new(lms)
+        .args(["ls", "--json"])
+        .output();
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            if let Ok(text) = String::from_utf8(out.stdout) {
+                for line in text.lines() {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(path) = json.get("path").and_then(|p| p.as_str()) {
+                            let name = std::path::Path::new(path)
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or(path);
+                            if !name.contains("embedding") && !name.contains("Embedding") {
+                                models.push(name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if models.is_empty() {
+        let output = std::process::Command::new(lms).args(["ls"]).output();
+        if let Ok(out) = output {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                for line in text.lines() {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty()
+                        && !trimmed.starts_with("LLM")
+                        && !trimmed.starts_with("EMBEDDING")
+                        && !trimmed.starts_with("---")
+                        && !trimmed.starts_with("You have")
+                        && !trimmed.contains("embedding")
+                        && !trimmed.contains("Embedding")
+                    {
+                        if let Some(name) = trimmed.split_whitespace().next() {
+                            models.push(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    models
 }
 
 fn update_transcription_config(engine: &str, model: &str) -> Result<()> {
@@ -1506,6 +1860,52 @@ fn update_audio_cues_config(enabled: bool) -> Result<()> {
         std::fs::write(&config_path, content)?;
     }
 
+    Ok(())
+}
+
+fn update_qmd_config(enabled: bool, auto_index: bool, collection_name: &str) -> Result<()> {
+    let config_path = config::loader::config_path()?;
+    let content = std::fs::read_to_string(&config_path)?;
+
+    if content.contains("[qmd]") {
+        let mut in_qmd = false;
+        let updated = content
+            .lines()
+            .map(|line| {
+                let trimmed = line.trim();
+                if trimmed == "[qmd]" {
+                    in_qmd = true;
+                } else if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                    in_qmd = false;
+                }
+
+                if in_qmd {
+                    if trimmed.starts_with("enabled =") {
+                        return format!("enabled = {}", enabled);
+                    }
+                    if trimmed.starts_with("auto_index =") {
+                        return format!("auto_index = {}", auto_index);
+                    }
+                    if trimmed.starts_with("collection_name =") {
+                        return format!("collection_name = \"{}\"", collection_name);
+                    }
+                }
+                line.to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&config_path, updated)?;
+    } else {
+        let mut content = content;
+        if !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str(&format!(
+            "\n[qmd]\nenabled = {}\nauto_index = {}\ncollection_name = \"{}\"\n",
+            enabled, auto_index, collection_name
+        ));
+        std::fs::write(&config_path, content)?;
+    }
     Ok(())
 }
 

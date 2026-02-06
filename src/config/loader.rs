@@ -93,12 +93,14 @@ pub fn load_config_with_env() -> Result<MuesliConfig> {
     if let Ok(key) = std::env::var("MUESLI_DEEPGRAM_API_KEY") {
         config.transcription.deepgram_api_key = Some(key);
     }
-    if let Ok(key) = std::env::var("MUESLI_OPENAI_API_KEY") {
-        config.transcription.openai_api_key = Some(key.clone());
-        config.llm.openai_api_key = Some(key);
+    if let Ok(key) = std::env::var("MUESLI_LLM_API_KEY") {
+        config.llm.api_key = Some(key);
     }
-    if let Ok(key) = std::env::var("MUESLI_CLAUDE_API_KEY") {
-        config.llm.claude_api_key = Some(key);
+    if let Ok(provider) = std::env::var("MUESLI_LLM_PROVIDER") {
+        config.llm.provider = provider;
+    }
+    if let Ok(model) = std::env::var("MUESLI_LLM_MODEL") {
+        config.llm.model = model;
     }
     if let Ok(engine) = std::env::var("MUESLI_TRANSCRIPTION_ENGINE") {
         config.transcription.engine = engine;
