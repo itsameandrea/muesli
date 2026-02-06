@@ -2,6 +2,20 @@
 
 AI-powered meeting note-taker for Linux/Hyprland that automatically detects, records, transcribes, and summarizes your meetings.
 
+## Installation
+
+Copy and run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/itsameandrea/muesli/master/install.sh | bash
+```
+
+Then finish setup:
+
+```bash
+muesli setup
+```
+
 ## Overview
 
 muesli is a background daemon that monitors your Hyprland window manager for meeting applications (primarily Google Meet, with experimental support for Zoom, Teams, and others), automatically records audio from both your microphone and system audio, transcribes the conversation using local AI models (Whisper or Parakeet), and generates structured meeting notes with AI summarization.
@@ -12,7 +26,8 @@ muesli is a background daemon that monitors your Hyprland window manager for mee
 - **Dual Audio Capture**: Records both microphone input and system audio (loopback) via PipeWire
 - **Local Transcription**: Uses Whisper.cpp for privacy-focused, offline speech-to-text
 - **Hosted API Support** *(Experimental)*: Optional integration with Deepgram or OpenAI Whisper API (untested)
-- **AI Summarization**: Generate structured notes with Claude or GPT (optional)
+- **Multi-Provider LLM Summarization**: Generate notes with local LM Studio, Anthropic, OpenAI, Moonshot, or OpenRouter
+- **Semantic Notes Search**: Search and ask questions across past meetings with qmd integration
 - **SQLite Storage**: Persistent storage of meetings, transcripts, and metadata
 - **Desktop Notifications**: Real-time status updates via Mako/notify-rust
 - **Audio Cues**: Optional sound notifications when recording starts/stops
@@ -39,7 +54,7 @@ muesli is a background daemon that monitors your Hyprland window manager for mee
 - Whisper model files (automatically downloaded during installation)
 - Sufficient disk space for audio recordings and models (~500MB for base model)
 
-## Installation
+## Build and Manual Installation
 
 ### Quick Install
 
@@ -61,16 +76,17 @@ The `muesli setup` command provides an interactive wizard that configures everyt
   muesli Setup Wizard
 ==========================================
 
-[1/10] Creating directories...
-[2/10] Initializing configuration...
-[3/10] GPU Acceleration
-[4/10] Transcription Model Selection
-[5/10] Speaker Diarization Model
-[6/10] Streaming Transcription (Optional)
-[7/10] LLM for Meeting Notes
-[8/10] Meeting Detection
-[9/10] Audio Cues
-[10/10] Systemd Service
+[1/11] Creating directories...
+[2/11] Initializing configuration...
+[3/11] GPU Acceleration
+[4/11] Transcription Model Selection
+[5/11] Speaker Diarization Model
+[6/11] Streaming Transcription (Optional)
+[7/11] LLM for Meeting Notes
+[8/11] Meeting Detection
+[9/11] Audio Cues
+[10/11] Systemd Service
+[11/11] qmd Search Integration
 ```
 
 **What the wizard configures:**
@@ -86,6 +102,7 @@ The `muesli setup` command provides an interactive wizard that configures everyt
 | **Meeting Detection** | Auto-detect meeting windows (Google Meet tested, others experimental) |
 | **Audio Cues** | Play sounds when recording starts/stops |
 | **Systemd Service** | Install user service for auto-start on login |
+| **qmd Search** | Semantic search and Q&A over your meeting notes |
 
 ### Manual Installation
 
@@ -143,13 +160,21 @@ use_gpu = false
 fallback_to_local = true
 
 [llm]
-# Engine: "none", "local", "claude", "openai"
-engine = "local"
-# For local LLM (LM Studio)
-local_model = "qwen2.5-7b-instruct-1m"
-# For cloud LLMs
-claude_model = "claude-sonnet-4-20250514"
-openai_model = "gpt-4o"
+# Provider: "none", "local", "anthropic", "openai", "moonshot", "openrouter"
+provider = "local"
+# Model name for selected provider
+model = "qwen2.5-7b-instruct-1m"
+# API key for cloud providers (optional)
+api_key = ""
+# LM Studio binary path (auto-detect if empty)
+local_lms_path = ""
+# Context window override (0 = auto-detect)
+context_limit = 0
+
+[qmd]
+enabled = false              # Enable semantic search over meeting notes
+auto_index = true            # Re-index notes automatically after meetings
+collection_name = "muesli-meetings"
 
 [detection]
 auto_detect = true
@@ -178,14 +203,16 @@ status_file = "..."          # Optional, defaults to $XDG_RUNTIME_DIR/muesli/way
 | **deepgram** | Fast | Excellent | No | ⚠️ Experimental | Requires API key, untested |
 | **openai** | Fast | Excellent | No | ⚠️ Experimental | Requires API key, untested |
 
-### LLM Engines
+### LLM Providers
 
-| Engine | Cost | Setup |
-|--------|------|-------|
+| Provider | Cost | Setup |
+|----------|------|-------|
 | **local** | Free | Requires [LM Studio](https://lmstudio.ai) |
-| **claude** | Paid | Requires `claude_api_key` |
-| **openai** | Paid | Requires `openai_api_key` |
-| **none** | - | No summarization |
+| **anthropic** | Paid | Set `llm.api_key` |
+| **openai** | Paid | Set `llm.api_key` |
+| **moonshot** | Paid | Set `llm.api_key` |
+| **openrouter** | Paid | Set `llm.api_key` |
+| **none** | - | Disable summarization |
 
 ### API Keys (Optional)
 
@@ -197,8 +224,8 @@ deepgram_api_key = "your-deepgram-key"
 openai_api_key = "your-openai-key"
 
 [llm]
-claude_api_key = "your-claude-key"
-openai_api_key = "your-openai-key"
+provider = "anthropic" # or openai, moonshot, openrouter
+api_key = "your-provider-key"
 ```
 
 ### Configuration Commands
@@ -301,6 +328,9 @@ muesli notes [meeting-id]
 
 # View meeting transcript
 muesli transcript [meeting-id]
+
+# Re-process a meeting (summary only, or full re-transcribe with --clean)
+muesli redo [meeting-id] [--clean]
 ```
 
 Note: Transcription and summarization happen automatically when recording stops.
@@ -310,6 +340,9 @@ Note: Transcription and summarization happen automatically when recording stops.
 ```bash
 # Run daemon in foreground (for debugging)
 muesli daemon
+
+# Rebuild and reinstall from source used by current binary
+muesli update
 
 # Use systemd for background operation
 systemctl --user start muesli.service
@@ -344,6 +377,22 @@ muesli models parakeet delete <model-name>
 muesli models diarization list
 muesli models diarization download sortformer-v2
 muesli models diarization delete sortformer-v2
+```
+
+### Meeting Search and Q&A
+
+```bash
+# Semantic search over indexed meeting notes
+muesli search "roadmap decisions" [-n 5] [--keyword]
+
+# Ask a natural-language question across your meetings
+muesli ask what did we decide about pricing
+
+# Rebuild qmd index
+muesli search reindex
+
+# Show qmd collection status
+muesli search status
 ```
 
 ### Audio Devices
