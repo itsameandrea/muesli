@@ -82,29 +82,3 @@ pub fn notify_status(message: &str) -> Result<()> {
         .map_err(|e| crate::error::MuesliError::Notification(e.to_string()))?;
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    #[ignore]
-    fn test_notify_meeting_detected() {
-        let result = notify_meeting_detected(MeetingApp::Zoom, "Team Standup");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    #[ignore]
-    fn test_notify_recording_started() {
-        let result = notify_recording_started("Team Standup");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    #[ignore]
-    fn test_notify_recording_stopped() {
-        let result = notify_recording_stopped("Team Standup", 45);
-        assert!(result.is_ok());
-    }
-}

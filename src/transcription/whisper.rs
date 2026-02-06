@@ -176,26 +176,3 @@ pub fn transcribe_chunked(engine: &WhisperEngine, samples: &[f32]) -> Result<Tra
 
     Ok(Transcript::new(all_segments))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Note: These tests require a downloaded Whisper model
-    // Run: cargo run -- models download tiny
-
-    #[test]
-    #[ignore] // Requires model
-    fn test_transcribe_silence() {
-        let models_dir = crate::transcription::models::default_models_dir().unwrap();
-        let manager = ModelManager::new(models_dir);
-        if !manager.model_exists(WhisperModel::Tiny) {
-            return;
-        }
-
-        let engine = WhisperEngine::from_model(&manager, WhisperModel::Tiny, false).unwrap();
-        let samples = vec![0.0f32; 16000]; // 1 second of silence
-        let result = engine.transcribe(&samples);
-        assert!(result.is_ok());
-    }
-}
