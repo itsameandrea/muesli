@@ -109,6 +109,9 @@ fn embed_version_info() {
         "cargo:rustc-env=MUESLI_VERSION_INFO={}{} {}",
         git_hash, git_dirty, build_date
     );
+
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    println!("cargo:rustc-env=MUESLI_SOURCE_DIR={}", manifest_dir);
 }
 
 fn fetch_catalog() -> Result<HashMap<String, Vec<CatalogEntry>>, Box<dyn std::error::Error>> {

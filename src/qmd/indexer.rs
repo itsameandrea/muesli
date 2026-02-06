@@ -8,11 +8,32 @@ const INDEX_TIMEOUT: Duration = Duration::from_secs(120);
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn is_qmd_installed() -> bool {
-    Command::new("which")
-        .arg("qmd")
+    find_qmd_binary().is_some()
+}
+
+pub(crate) fn find_qmd_binary() -> Option<String> {
+    if Command::new("qmd")
+        .arg("--help")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+    {
+        return Some("qmd".to_string());
+    }
+
+    let home = std::env::var("HOME").unwrap_or_default();
+    let candidates = [
+        format!("{}/.cache/.bun/bin/qmd", home),
+        format!("{}/.bun/bin/qmd", home),
+    ];
+
+    for path in &candidates {
+        if std::path::Path::new(path).exists() {
+            return Some(path.clone());
+        }
+    }
+
+    None
 }
 
 pub(crate) fn ensure_qmd() -> Result<()> {
@@ -125,10 +146,16 @@ pub fn reindex(collection_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_qmd_command(args: &[&str], timeout: Duration) -> Result<std::process::Output> {
+pub(crate) fn run_qmd_command(args: &[&str], timeout: Duration) -> Result<std::process::Output> {
     use std::process::Stdio;
 
-    let child = Command::new("qmd")
+    let qmd = find_qmd_binary().ok_or_else(|| {
+        MuesliError::Qmd(
+            "qmd is not installed. Install it with: bun install -g github:tobi/qmd".to_string(),
+        )
+    })?;
+
+    let child = Command::new(&qmd)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -139,8 +166,7 @@ fn run_qmd_command(args: &[&str], timeout: Duration) -> Result<std::process::Out
         .wait_with_output()
         .map_err(|e| MuesliError::Qmd(format!("qmd process failed: {}", e)))?;
 
-    // Check if we exceeded timeout (approximate — real timeout needs thread)
-    let _ = timeout; // Used for documentation; actual timeout via wait_with_output
+    let _ = timeout;
 
     Ok(output)
 }

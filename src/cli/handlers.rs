@@ -928,21 +928,33 @@ WantedBy=default.target
     println!();
 
     println!("[11/11] qmd Search Integration");
-    println!("  qmd enables semantic search across all your meeting notes.");
-    println!("  Install: bun install -g https://github.com/tobi/qmd");
+    println!("  qmd enables AI-powered semantic search across all your meeting notes.");
     println!();
 
-    if crate::qmd::indexer::is_qmd_installed() {
-        println!("  qmd detected!");
-        println!();
+    let enable_qmd = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("Enable qmd search for meeting notes?")
+        .default(true)
+        .interact()
+        .unwrap_or(false);
 
-        let enable_qmd = Confirm::with_theme(&ColorfulTheme::default())
-            .with_prompt("Enable qmd search for meeting notes?")
-            .default(true)
-            .interact()
-            .unwrap_or(false);
+    if enable_qmd {
+        if !crate::qmd::indexer::is_qmd_installed() {
+            println!();
+            println!("  qmd not found. Installing...");
+            if install_qmd() {
+                println!("  qmd installed!");
+            } else {
+                println!("  Failed to install qmd automatically.");
+                println!("  Install manually: bun install -g github:tobi/qmd");
+                println!("  Then re-run: muesli setup");
+                update_qmd_config(false, false, "muesli-meetings")?;
+            }
+        } else {
+            println!("  qmd detected!");
+        }
 
-        if enable_qmd {
+        if crate::qmd::indexer::is_qmd_installed() {
+            println!();
             update_qmd_config(true, true, "muesli-meetings")?;
 
             let notes_dir = config::loader::notes_dir()?;
@@ -962,16 +974,10 @@ WantedBy=default.target
                     println!("  Initial indexing complete!");
                 }
             }
-        } else {
-            update_qmd_config(false, false, "muesli-meetings")?;
-            println!("  qmd search disabled.");
         }
     } else {
-        println!("  qmd not found. Install it to enable meeting search:");
-        println!("  bun install -g https://github.com/tobi/qmd");
-        println!();
-        println!("  After installing, run 'muesli setup' again to configure.");
         update_qmd_config(false, false, "muesli-meetings")?;
+        println!("  qmd search disabled.");
     }
     println!();
 
@@ -979,19 +985,36 @@ WantedBy=default.target
     println!("  Setup Complete!");
     println!("==========================================");
     println!();
-    println!("Next steps:");
+
+    println!("Starting daemon...");
+    let daemon_bin = std::env::current_exe().unwrap_or_else(|_| "muesli".into());
+    match std::process::Command::new(&daemon_bin)
+        .arg("daemon")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(_) => {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            println!("  Daemon started! muesli is now monitoring for meetings.");
+        }
+        Err(e) => {
+            println!("  Failed to start daemon: {}", e);
+            println!("  Start manually with: muesli daemon");
+        }
+    }
+
     println!();
-    println!("  1. Start the daemon:");
-    println!("     muesli daemon");
+    println!("Tips:");
     println!();
-    println!("  2. Or enable auto-start:");
-    println!("     systemctl --user enable --now muesli.service");
+    println!("  - Auto-start on login:");
+    println!("    systemctl --user enable --now muesli.service");
     println!();
-    println!("  3. Test audio devices:");
-    println!("     muesli audio list-devices");
+    println!("  - Test audio devices:");
+    println!("    muesli audio list-devices");
     println!();
-    println!("  4. Edit configuration if needed:");
-    println!("     muesli config edit");
+    println!("  - Edit configuration:");
+    println!("    muesli config edit");
     println!();
 
     Ok(())
@@ -1000,52 +1023,29 @@ WantedBy=default.target
 async fn handle_update() -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
     let version_info = env!("MUESLI_VERSION_INFO");
+    let source_dir = env!("MUESLI_SOURCE_DIR");
+
     println!("Current: muesli {} ({})", current_version, version_info);
+    println!("Source:  {}", source_dir);
     println!();
 
-    let repo_dir = std::env::current_exe()
+    let repo_dir = std::path::Path::new(source_dir);
+    if !repo_dir.join("Cargo.toml").exists() {
+        eprintln!("Source directory no longer exists: {}", source_dir);
+        eprintln!("Rebuild manually: cd /path/to/muesli && cargo build --release");
+        return Ok(());
+    }
+
+    let install_dir = std::env::current_exe()
         .ok()
-        .and_then(|p| {
-            let mut dir = p.parent()?.to_path_buf();
-            // Walk up from the binary to find the repo (handles both target/release/ and ~/.local/bin/)
-            for _ in 0..5 {
-                if dir.join("Cargo.toml").exists() {
-                    return Some(dir);
-                }
-                dir = dir.parent()?.to_path_buf();
-            }
-            None
-        })
-        .or_else(|| {
-            // Fallback: check common source locations
-            let home = std::env::var("HOME").ok()?;
-            let candidates = [
-                format!("{}/Code/itsameandrea/muesli", home),
-                format!("{}/muesli", home),
-                format!("{}/src/muesli", home),
-            ];
-            candidates
-                .iter()
-                .map(std::path::PathBuf::from)
-                .find(|p| p.join("Cargo.toml").exists())
-        });
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
 
-    let repo_dir = match repo_dir {
-        Some(d) => d,
-        None => {
-            eprintln!("Could not find muesli source directory.");
-            eprintln!("Run from the source directory: cd /path/to/muesli && cargo install --path .");
-            return Ok(());
-        }
-    };
-
-    println!("Source:  {}", repo_dir.display());
     println!("Building...");
     println!();
 
     let status = std::process::Command::new("cargo")
-        .args(["install", "--path", "."])
-        .current_dir(&repo_dir)
+        .args(["build", "--release"])
+        .current_dir(repo_dir)
         .status()
         .map_err(|e| crate::error::MuesliError::Config(format!("Failed to run cargo: {}", e)))?;
 
@@ -1054,9 +1054,30 @@ async fn handle_update() -> Result<()> {
         return Ok(());
     }
 
+    let built_binary = repo_dir.join("target/release/muesli");
+
+    if let Some(dir) = &install_dir {
+        let dest = dir.join("muesli");
+        let tmp = dir.join(".muesli.update.tmp");
+        if let Err(e) = std::fs::copy(&built_binary, &tmp) {
+            eprintln!("Failed to copy to {}: {}", tmp.display(), e);
+            return Ok(());
+        }
+        let _ = std::fs::remove_file(&dest);
+        if let Err(e) = std::fs::rename(&tmp, &dest) {
+            eprintln!("Failed to install to {}: {}", dest.display(), e);
+            let _ = std::fs::remove_file(&tmp);
+            return Ok(());
+        }
+    }
+
     println!();
 
-    let new_version = std::process::Command::new("muesli")
+    let check_binary = install_dir
+        .map(|d| d.join("muesli"))
+        .unwrap_or(built_binary);
+
+    let new_version = std::process::Command::new(&check_binary)
         .arg("--version")
         .output()
         .ok()
@@ -1861,6 +1882,102 @@ fn update_audio_cues_config(enabled: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn bun_global_bin_dir() -> Vec<std::path::PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    vec![
+        std::path::PathBuf::from(format!("{}/.bun/bin", home)),
+        std::path::PathBuf::from(format!("{}/.cache/.bun/bin", home)),
+    ]
+}
+
+fn add_bun_to_path() {
+    if let Ok(current_path) = std::env::var("PATH") {
+        let mut paths: Vec<String> = vec![];
+        for dir in bun_global_bin_dir() {
+            if dir.exists() {
+                paths.push(dir.to_string_lossy().to_string());
+            }
+        }
+        if !paths.is_empty() {
+            paths.push(current_path);
+            std::env::set_var("PATH", paths.join(":"));
+        }
+    }
+}
+
+fn find_bun() -> Option<String> {
+    if std::process::Command::new("bun")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return Some("bun".to_string());
+    }
+
+    let home = std::env::var("HOME").unwrap_or_default();
+    let path = format!("{}/.bun/bin/bun", home);
+    if std::path::Path::new(&path).exists() {
+        return Some(path);
+    }
+
+    None
+}
+
+fn install_bun() -> bool {
+    println!("  bun not found. Installing bun...");
+    let status = std::process::Command::new("sh")
+        .args(["-c", "curl -fsSL https://bun.sh/install | bash"])
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            add_bun_to_path();
+            println!("  bun installed!");
+            true
+        }
+        _ => {
+            println!("  Failed to install bun.");
+            println!("  Install manually: https://bun.sh");
+            false
+        }
+    }
+}
+
+fn install_qmd() -> bool {
+    let bun = match find_bun() {
+        Some(b) => b,
+        None => {
+            if !install_bun() {
+                return false;
+            }
+            match find_bun() {
+                Some(b) => b,
+                None => {
+                    println!("  bun installed but not found in PATH.");
+                    return false;
+                }
+            }
+        }
+    };
+
+    println!("  Installing qmd...");
+    let status = std::process::Command::new(&bun)
+        .args(["install", "-g", "github:tobi/qmd"])
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            add_bun_to_path();
+            crate::qmd::indexer::is_qmd_installed()
+        }
+        _ => {
+            println!("  qmd installation failed.");
+            false
+        }
+    }
 }
 
 fn update_qmd_config(enabled: bool, auto_index: bool, collection_name: &str) -> Result<()> {

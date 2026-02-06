@@ -1,39 +1,76 @@
 use crate::transcription::TranscriptSegment;
 
 pub fn meeting_summary_prompt(transcript: &str) -> String {
+    let char_count = transcript.len();
+    let length_hint = length_guidance(char_count);
+
     format!(
-        r#"Create meeting minutes from this transcript.
+        r#"Create comprehensive meeting notes from this transcript.
 
 TRANSCRIPT:
-{}
+{transcript}
 
 Output MARKDOWN with these sections:
 
+## TL;DR
+2-3 sentence summary of the meeting's purpose and outcome.
+
 ## Topics Covered
-- Bullet list of main topics discussed (3-7 items)
+- Bullet list of every distinct topic discussed ({topic_range})
 
 ## Discussion
 For each topic above, create a subsection:
 ### [Topic Name]
-- Bullet points of what was discussed
-- Include specific details, names, numbers mentioned
-- Note any disagreements or alternative viewpoints
+- Write detailed paragraphs and bullet points covering what was discussed
+- Include specific details: names, numbers, tools, dates, URLs, code references
+- Capture the reasoning and context behind statements, not just conclusions
+- Note disagreements, alternative viewpoints, or open questions
+- Include relevant quotes when they capture important nuance
+{length_instruction}
 
 ## Decisions Made
-- List each decision (ONLY if explicit decisions were made, otherwise omit this section entirely)
+- List each decision with context for why it was made (ONLY if explicit decisions were made, otherwise omit this section entirely)
 
 ## Action Items
 - [ ] Task — Owner — Due date (ONLY if action items exist, otherwise omit this section entirely)
 
+## Open Questions
+- Unresolved questions or topics that need follow-up (OMIT if none)
+
 RULES:
-- Be specific and detailed, use actual content from the transcript
+- Be thorough — these notes replace attending the meeting
+- Someone reading this should understand not just WHAT was discussed but WHY
 - Fix transcription errors from context (e.g., "get" → "git", "hey I" → "AI")
-- Omit Decisions/Action Items sections if none exist (don't write "None")
-- No fluff, no filler, no corporate speak
+- Omit Decisions/Action Items/Open Questions sections if none exist
+- No fluff, no filler, no corporate speak — but DO include all substantive detail
 
 Output ONLY the markdown."#,
-        transcript
+        transcript = transcript,
+        topic_range = length_hint.topic_range,
+        length_instruction = length_hint.detail_instruction,
     )
+}
+
+struct LengthGuidance {
+    topic_range: &'static str,
+    detail_instruction: &'static str,
+}
+
+fn length_guidance(transcript_chars: usize) -> LengthGuidance {
+    match transcript_chars {
+        0..=10_000 => LengthGuidance {
+            topic_range: "2-5 items",
+            detail_instruction: "- Aim for 2-4 bullet points per topic",
+        },
+        10_001..=40_000 => LengthGuidance {
+            topic_range: "5-10 items",
+            detail_instruction: "- Aim for a thorough paragraph + bullet points per topic\n- This is a medium-length meeting — capture all important discussion threads",
+        },
+        _ => LengthGuidance {
+            topic_range: "8-15+ items — do not compress, this was a long meeting",
+            detail_instruction: "- Write extensively for each topic — multiple paragraphs if needed\n- This is a long meeting — the notes should be proportionally detailed\n- Capture the full arc of each discussion: context, debate, reasoning, conclusion",
+        },
+    }
 }
 
 pub fn meeting_summary_prompt_with_speakers(segments: &[TranscriptSegment]) -> String {
@@ -51,46 +88,61 @@ pub fn meeting_summary_prompt_with_speakers(segments: &[TranscriptSegment]) -> S
         }
     }
 
-    format!(
-        r#"Create meeting minutes from this transcript.
+    let char_count = transcript.len();
+    let length_hint = length_guidance(char_count);
 
-Speakers are labeled SPEAKER_1, SPEAKER_2, etc. Try to identify them by name if mentioned, otherwise use Speaker 1, Speaker 2.
+    format!(
+        r#"Create comprehensive meeting notes from this transcript.
+
+Speakers are labeled SPEAKER_1, SPEAKER_2, etc. Try to identify them by name if mentioned in conversation, otherwise use Speaker 1, Speaker 2.
 
 TRANSCRIPT:
-{}
+{transcript}
 
 Output MARKDOWN with these sections:
+
+## TL;DR
+2-3 sentence summary of the meeting's purpose and outcome.
 
 ## Attendees
 - Speaker 1 (or name if identified): brief role if inferable
 - Speaker 2: ...
 
 ## Topics Covered
-- Bullet list of main topics discussed (3-7 items)
+- Bullet list of every distinct topic discussed ({topic_range})
 
 ## Discussion
 For each topic above, create a subsection:
 ### [Topic Name]
-- Bullet points of what was discussed
+- Write detailed paragraphs and bullet points covering what was discussed
 - Attribute key points to speakers (e.g., "Speaker 1 explained...", "John suggested...")
-- Include specific details, names, numbers, tools mentioned
-- Note any disagreements or alternative viewpoints
+- Include specific details: names, numbers, tools, dates, URLs, code references
+- Capture the reasoning and context behind statements, not just conclusions
+- Note disagreements, alternative viewpoints, or open questions
+- Include relevant quotes when they capture important nuance
+{length_instruction}
 
 ## Decisions Made
-- List each decision with who made/agreed to it (ONLY if explicit decisions were made, otherwise omit this section entirely)
+- List each decision with context and who made/agreed to it (ONLY if explicit decisions were made, otherwise omit this section entirely)
 
 ## Action Items
 - [ ] Task — Owner — Due date (ONLY if action items exist, otherwise omit this section entirely)
 
+## Open Questions
+- Unresolved questions or topics that need follow-up (OMIT if none)
+
 RULES:
-- Be specific and detailed, use actual content from the transcript
+- Be thorough — these notes replace attending the meeting
+- Someone reading this should understand not just WHAT was discussed but WHY
 - Fix transcription errors from context (e.g., "get" → "git", "hey I" → "AI", "Paracate" → "Parakeet")
-- Omit Decisions/Action Items sections if none exist (don't write "None")
-- No fluff, no filler, no corporate speak
+- Omit Decisions/Action Items/Open Questions sections if none exist
+- No fluff, no filler, no corporate speak — but DO include all substantive detail
 - Attribute statements to speakers throughout
 
 Output ONLY the markdown."#,
-        transcript
+        transcript = transcript,
+        topic_range = length_hint.topic_range,
+        length_instruction = length_hint.detail_instruction,
     )
 }
 
@@ -107,7 +159,9 @@ pub fn chunk_summary_prompt(
     total_chunks: usize,
 ) -> String {
     format!(
-        r#"Summarize this portion of a meeting transcript (chunk {current} of {total}).
+        r#"Create detailed notes for this portion of a meeting transcript (chunk {current} of {total}).
+
+IMPORTANT: This is one section of a longer meeting. Write thorough notes — they will be merged with other chunks later. Do NOT compress or summarize aggressively. Preserve detail.
 
 TRANSCRIPT CHUNK:
 {transcript}
@@ -115,24 +169,29 @@ TRANSCRIPT CHUNK:
 Output:
 
 ## Topics in This Section
-- List each distinct topic discussed
+- List every distinct topic discussed in this chunk
 
 ## Discussion Details
 For each topic:
 ### [Topic Name]
-- Key points discussed (attribute to speakers if identified)
-- Specific details, names, numbers mentioned
+- Write detailed paragraphs and bullet points covering what was discussed
+- Attribute points to speakers if identified
+- Include specific details: names, numbers, tools, dates, URLs, code references
+- Capture reasoning and context, not just conclusions
+- Note disagreements, open questions, or alternative viewpoints
+- Include relevant quotes when they capture important nuance
 
 ## Decisions (if any)
-- Any explicit decisions made
+- Decisions made with context for why
 
 ## Action Items (if any)
-- Any tasks assigned
+- Tasks assigned with owner and any mentioned timeline
 
 RULES:
-- Be thorough - this will be merged with other chunks
+- Be thorough — detail lost here cannot be recovered during synthesis
 - Fix transcription errors from context (e.g., "get" → "git", "hey I" → "AI")
 - Only include Decisions/Action Items if they actually exist
+- Write as much detail as the transcript warrants
 
 Output ONLY the markdown."#,
         current = chunk_index + 1,
@@ -145,44 +204,56 @@ pub fn synthesis_prompt(chunk_summaries: &[String]) -> String {
     let combined = chunk_summaries
         .iter()
         .enumerate()
-        .map(|(i, s)| format!("--- CHUNK {} SUMMARY ---\n{}\n", i + 1, s))
+        .map(|(i, s)| format!("--- CHUNK {} NOTES ---\n{}\n", i + 1, s))
         .collect::<Vec<_>>()
         .join("\n");
 
     format!(
-        r#"Synthesize these chunk summaries into unified meeting minutes.
+        r#"Merge these chunk notes into unified, comprehensive meeting notes.
+
+This was a long meeting ({chunk_count} chunks). The final notes should be proportionally detailed.
 
 {combined}
 
-Merge related topics, consolidate decisions/actions, remove redundancy.
-
 Output MARKDOWN:
+
+## TL;DR
+2-3 sentence summary of the meeting's purpose and outcome.
 
 ## Attendees
 - List participants and roles (if identifiable)
 
 ## Topics Covered
-- Bullet list of all main topics (5-10 for long meetings)
+- Bullet list of ALL main topics — do not drop topics to be brief
 
 ## Discussion
-For each topic:
+For each topic, create a subsection:
 ### [Topic Name]
-- Key points discussed (attribute to speakers)
-- Specific details mentioned
+- Merge related discussion from different chunks into coherent narratives
+- Write detailed paragraphs and bullet points — preserve the depth from the chunk notes
+- Attribute points to speakers
+- Include specific details: names, numbers, tools, dates, code references
+- Capture reasoning and context behind decisions
+- Note disagreements and open questions
 
 ## Decisions Made
-- All decisions from the meeting (OMIT section if none)
+- Every decision from the meeting with context (OMIT section if none)
 
 ## Action Items
 - [ ] Task — Owner — Due date (OMIT section if none)
 
+## Open Questions
+- Unresolved questions or topics needing follow-up (OMIT if none)
+
 RULES:
-- Synthesize, don't concatenate
-- Group related topics even if discussed across chunks
-- Keep all decisions and action items (don't lose any)
-- No fluff
+- Merge related topics that span chunks, but do NOT compress detail
+- The output should be comprehensive enough to replace attending the meeting
+- Keep ALL decisions and action items — losing any is a failure
+- No fluff, no filler — but DO preserve all substantive detail
+- If chunks covered the same topic, merge the discussion — don't repeat
 
 Output ONLY the markdown."#,
+        chunk_count = chunk_summaries.len(),
         combined = combined
     )
 }
