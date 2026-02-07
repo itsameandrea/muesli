@@ -1,5 +1,6 @@
 //! Audio stream mixing - combines microphone and loopback audio into one stream.
 
+use crate::audio::convert::{prepare_for_whisper, WHISPER_SAMPLE_RATE};
 use crate::audio::AudioChunk;
 use std::collections::VecDeque;
 use tokio::sync::broadcast;
@@ -34,14 +35,17 @@ impl AudioMixer {
         let loopback_chunk = self.loopback_buffer.pop_front();
 
         match (mic_chunk, loopback_chunk) {
-            (Some(mic), Some(loopback)) => Some(self.mix_chunks(mic, loopback)),
-            (Some(mic), None) => Some(mic),
-            (None, Some(loopback)) => Some(loopback),
+            (Some(mic), Some(loopback)) => self.mix_chunks(mic, loopback),
+            (Some(mic), None) => self.convert_chunk_to_output(mic),
+            (None, Some(loopback)) => self.convert_chunk_to_output(loopback),
             (None, None) => None,
         }
     }
 
-    fn mix_chunks(&self, mic: AudioChunk, loopback: AudioChunk) -> AudioChunk {
+    fn mix_chunks(&self, mic: AudioChunk, loopback: AudioChunk) -> Option<AudioChunk> {
+        let mic = self.convert_chunk_to_output(mic)?;
+        let loopback = self.convert_chunk_to_output(loopback)?;
+
         let len = mic.samples.len().max(loopback.samples.len());
         let mut mixed = vec![0.0f32; len];
 
@@ -61,12 +65,40 @@ impl AudioMixer {
             *sample = soft_clip(*sample);
         }
 
-        AudioChunk::new(
+        Some(AudioChunk::new(
             mixed,
             self.output_sample_rate,
             self.output_channels,
             mic.timestamp_ms.min(loopback.timestamp_ms),
-        )
+        ))
+    }
+
+    fn convert_chunk_to_output(&self, chunk: AudioChunk) -> Option<AudioChunk> {
+        if chunk.sample_rate == self.output_sample_rate && chunk.channels == self.output_channels {
+            return Some(chunk);
+        }
+
+        if self.output_sample_rate == WHISPER_SAMPLE_RATE && self.output_channels == 1 {
+            match prepare_for_whisper(&chunk) {
+                Ok(samples) => Some(AudioChunk::new(
+                    samples,
+                    self.output_sample_rate,
+                    self.output_channels,
+                    chunk.timestamp_ms,
+                )),
+                Err(e) => {
+                    tracing::warn!("Failed to convert audio chunk to Whisper format: {}", e);
+                    None
+                }
+            }
+        } else {
+            tracing::warn!(
+                "Unsupported mixer output format: {}Hz {} channel(s)",
+                self.output_sample_rate,
+                self.output_channels
+            );
+            None
+        }
     }
 
     pub fn drain(&mut self) -> Vec<AudioChunk> {
@@ -225,5 +257,36 @@ mod tests {
 
         let output = mixer.mix().unwrap();
         assert_eq!(output.timestamp_ms, 50);
+    }
+
+    #[test]
+    fn test_mixer_converts_mic_only_to_output_format() {
+        let mut mixer = AudioMixer::new(16000, 1);
+
+        let mic = AudioChunk::new(vec![0.5; 44100 * 2], 44100, 2, 123);
+        mixer.add_mic_chunk(mic);
+
+        let output = mixer.mix().unwrap();
+        assert_eq!(output.sample_rate, 16000);
+        assert_eq!(output.channels, 1);
+        assert_eq!(output.timestamp_ms, 123);
+        assert!(output.samples.len() > 15000 && output.samples.len() < 17000);
+    }
+
+    #[test]
+    fn test_mixer_converts_both_inputs_before_mixing() {
+        let mut mixer = AudioMixer::new(16000, 1);
+
+        let mic = AudioChunk::new(vec![0.4; 44100 * 2], 44100, 2, 300);
+        let loopback = AudioChunk::new(vec![0.2; 44100 * 2], 44100, 2, 250);
+
+        mixer.add_mic_chunk(mic);
+        mixer.add_loopback_chunk(loopback);
+
+        let output = mixer.mix().unwrap();
+        assert_eq!(output.sample_rate, 16000);
+        assert_eq!(output.channels, 1);
+        assert_eq!(output.timestamp_ms, 250);
+        assert!(output.samples.len() > 15000 && output.samples.len() < 17000);
     }
 }
