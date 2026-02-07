@@ -34,7 +34,7 @@ rodio = "0.19"
 
 # Transcription
 whisper-rs = { git = "https://codeberg.org/tazz4843/whisper-rs.git" }
-parakeet-rs = { version = "0.3", features = ["sortformer"] }
+sortformer-rs = { package = "parakeet-rs", version = "0.3", features = ["sortformer"] }
 
 # Hyprland
 hyprland = "0.4.0-beta.3"

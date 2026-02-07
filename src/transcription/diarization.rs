@@ -1,6 +1,6 @@
 use crate::error::{MuesliError, Result};
 use crate::transcription::Transcript;
-use parakeet_rs::sortformer::Sortformer;
+use sortformer_rs::sortformer::Sortformer;
 use std::path::Path;
 
 const DIAR_CHUNK_SECS: usize = 600; // 10 minutes per chunk

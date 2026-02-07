@@ -81,7 +81,7 @@ The `muesli setup` command provides an interactive wizard that configures everyt
 [3/11] GPU Acceleration
 [4/11] Transcription Model Selection
 [5/11] Speaker Diarization Model
-[6/11] Streaming Transcription (Optional)
+[6/11] Faster Processing on Stop
 [7/11] LLM for Meeting Notes
 [8/11] Meeting Detection
 [9/11] Audio Cues
@@ -95,9 +95,9 @@ The `muesli setup` command provides an interactive wizard that configures everyt
 |------|-------------|
 | **Directories** | Creates `~/.config/muesli/` and `~/.local/share/muesli/` |
 | **GPU Acceleration** | Enables Vulkan/CUDA/Metal for faster transcription |
-| **Transcription Model** | Choose Whisper (tiny→large) or Parakeet (20-30x faster ONNX) |
+| **Transcription Model** | Choose Whisper model size (tiny→large) |
 | **Diarization** | Speaker identification model (sortformer-v2) |
-| **Streaming** | Optional Nemotron model for real-time transcription |
+| **Streaming** | Whisper incremental transcription while recording |
 | **LLM** | Auto-detects LM Studio and lists available models for meeting summaries |
 | **Meeting Detection** | Auto-detect meeting windows (Google Meet tested, others experimental) |
 | **Audio Cues** | Play sounds when recording starts/stops |
@@ -126,7 +126,6 @@ muesli setup
 
 # Or manually download models:
 muesli models whisper download base              # Whisper base model
-muesli models parakeet download parakeet-v3-int8 # Parakeet (faster)
 muesli models diarization download sortformer-v2 # Speaker identification
 
 # Install systemd service
@@ -150,12 +149,10 @@ capture_system_audio = true
 sample_rate = 16000
 
 [transcription]
-# Engine: "whisper" or "parakeet"
-engine = "parakeet"
-# Model name (depends on engine)
-# Whisper: tiny, base, small, medium, large, large-v3-turbo
-# Parakeet: parakeet-v3, parakeet-v3-int8
-model = "parakeet-v3-int8"
+# Engine: "whisper"
+engine = "whisper"
+# Whisper model: tiny, base, small, medium, large, large-v3-turbo
+model = "base"
 use_gpu = false
 fallback_to_local = true
 
@@ -198,8 +195,7 @@ status_file = "..."          # Optional, defaults to $XDG_RUNTIME_DIR/muesli/way
 
 | Engine | Speed | Quality | Offline | Status | Notes |
 |--------|-------|---------|---------|--------|-------|
-| **parakeet** | 20-30x faster | Excellent | Yes | ✅ Tested | ONNX-based, recommended |
-| **whisper** | Baseline | Excellent | Yes | ✅ Tested | Original whisper.cpp |
+| **whisper** | Good | Excellent | Yes | ✅ Tested | Original whisper.cpp with incremental transcription |
 | **deepgram** | Fast | Excellent | No | ⚠️ Experimental | Requires API key, untested |
 | **openai** | Fast | Excellent | No | ⚠️ Experimental | Requires API key, untested |
 
@@ -333,7 +329,9 @@ muesli transcript [meeting-id]
 muesli redo [meeting-id] [--clean]
 ```
 
-Note: Transcription and summarization happen automatically when recording stops.
+Note: Transcription and summarization happen automatically when recording stops. With streaming/incremental transcription enabled, post-stop processing is much faster.
+
+Speaker labels (`SPEAKER_1`, `SPEAKER_2`, ...) are added by the diarization step. If the diarization model is missing, muesli now attempts to download it automatically during processing.
 
 ### Daemon Control
 
@@ -367,11 +365,6 @@ muesli config edit
 muesli models whisper list
 muesli models whisper download <tiny|base|small|medium|large|large-v3-turbo>
 muesli models whisper delete <model-name>
-
-# Parakeet models (ONNX, 20-30x faster)
-muesli models parakeet list
-muesli models parakeet download <parakeet-v3|parakeet-v3-int8|nemotron-streaming>
-muesli models parakeet delete <model-name>
 
 # Diarization models (speaker identification)
 muesli models diarization list
@@ -552,14 +545,11 @@ If transcription fails:
 1. Check available models:
    ```bash
    muesli models whisper list
-   muesli models parakeet list
    ```
 
 2. Download missing model:
    ```bash
    muesli models whisper download base
-   # or
-   muesli models parakeet download parakeet-v3-int8
    ```
 
 3. Verify model path in config:

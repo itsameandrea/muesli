@@ -75,18 +75,15 @@ impl Default for AudioConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptionConfig {
-    /// Transcription engine: "whisper" or "parakeet"
+    /// Transcription engine (currently: "whisper")
     #[serde(default = "default_engine")]
     pub engine: String,
-    /// Model name (whisper: tiny/base/small/medium/large, parakeet: parakeet-v3/parakeet-v3-int8)
+    /// Model name (whisper: tiny/base/small/medium/large)
     #[serde(default = "default_model")]
     pub model: String,
     /// Legacy: whisper model (for backwards compatibility)
     #[serde(default)]
     pub whisper_model: Option<String>,
-    /// Legacy: parakeet model (for backwards compatibility)
-    #[serde(default)]
-    pub parakeet_model: Option<String>,
     pub whisper_model_path: Option<PathBuf>,
     #[serde(default)]
     pub use_gpu: bool,
@@ -102,7 +99,6 @@ impl Default for TranscriptionConfig {
             engine: "whisper".to_string(),
             model: "base".to_string(),
             whisper_model: None,
-            parakeet_model: None,
             whisper_model_path: None,
             use_gpu: false,
             deepgram_api_key: None,
@@ -119,11 +115,7 @@ impl TranscriptionConfig {
             return &self.model;
         }
 
-        match self.engine.as_str() {
-            "whisper" => self.whisper_model.as_deref().unwrap_or(&self.model),
-            "parakeet" => self.parakeet_model.as_deref().unwrap_or("parakeet-v3-int8"),
-            _ => &self.model,
-        }
+        self.whisper_model.as_deref().unwrap_or(&self.model)
     }
 }
 

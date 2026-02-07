@@ -11,8 +11,8 @@ use crate::error::{MuesliError, Result};
 use crate::notification;
 use crate::storage::database::Database;
 use crate::storage::Meeting;
-use crate::transcription::parakeet_models::{ParakeetModel, ParakeetModelManager};
-use crate::transcription::streaming::StreamingTranscriber;
+use crate::transcription::models::{ModelManager, WhisperModel};
+use crate::transcription::streaming::{StreamingTranscriber, WhisperStreamingConfig};
 use crate::transcription::TranscriptSegment;
 use crate::waybar::{update_waybar_status, WaybarStatus};
 use cpal::Stream;
@@ -646,15 +646,18 @@ async fn start_audio_recording(state: &mut DaemonState, audio_path: PathBuf) -> 
     let audio_running_task = audio_running.clone();
     let audio_path_task = audio_path.clone();
 
-    let nemotron_model_dir = check_nemotron_model();
-    let streaming_enabled = nemotron_model_dir.is_some();
+    let streaming_backend = select_streaming_backend();
+    let streaming_enabled = streaming_backend.is_some();
 
-    if streaming_enabled {
-        tracing::info!("Streaming transcription enabled (Nemotron model found)");
-    } else {
-        tracing::info!(
-            "Streaming transcription disabled (Nemotron model not found, will transcribe at end)"
-        );
+    match &streaming_backend {
+        Some(_) => {
+            tracing::info!("Incremental transcription enabled (Whisper backend)");
+        }
+        None => {
+            tracing::info!(
+                "Streaming/incremental transcription disabled (no backend available, will transcribe at end)"
+            );
+        }
     }
 
     let (segment_tx, segment_rx) = std::sync::mpsc::channel();
@@ -663,7 +666,7 @@ async fn start_audio_recording(state: &mut DaemonState, audio_path: PathBuf) -> 
         let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
         rt.block_on(async move {
             let segments =
-                run_recording_task(audio_path_task, audio_running_task, nemotron_model_dir).await;
+                run_recording_task(audio_path_task, audio_running_task, streaming_backend).await;
             let _ = segment_tx.send(segments);
         });
     });
@@ -676,12 +679,23 @@ async fn start_audio_recording(state: &mut DaemonState, audio_path: PathBuf) -> 
     Ok(())
 }
 
-fn check_nemotron_model() -> Option<PathBuf> {
+fn select_streaming_backend() -> Option<WhisperStreamingConfig> {
     let models_dir = models_dir().ok()?;
-    let manager = ParakeetModelManager::new(models_dir);
 
-    if manager.model_exists(ParakeetModel::NemotronStreaming) {
-        Some(manager.model_dir(ParakeetModel::NemotronStreaming))
+    let config = load_config().ok()?;
+    if config.transcription.engine != "whisper" {
+        return None;
+    }
+
+    let whisper_model = WhisperModel::from_str(config.transcription.effective_model())
+        .unwrap_or(WhisperModel::Base);
+    let whisper_manager = ModelManager::new(models_dir);
+
+    if whisper_manager.model_exists(whisper_model) {
+        Some(WhisperStreamingConfig {
+            model_path: whisper_manager.model_path(whisper_model),
+            use_gpu: config.transcription.use_gpu,
+        })
     } else {
         None
     }
@@ -690,7 +704,7 @@ fn check_nemotron_model() -> Option<PathBuf> {
 async fn run_recording_task(
     audio_path: PathBuf,
     is_running: Arc<AtomicBool>,
-    nemotron_model_dir: Option<PathBuf>,
+    streaming_backend: Option<WhisperStreamingConfig>,
 ) -> Vec<TranscriptSegment> {
     let mut recorder = match WavRecorder::new(&audio_path) {
         Ok(rec) => rec,
@@ -701,7 +715,7 @@ async fn run_recording_task(
     };
 
     let transcriber =
-        nemotron_model_dir.and_then(|model_dir| match StreamingTranscriber::new(&model_dir) {
+        streaming_backend.and_then(|backend| match StreamingTranscriber::new(backend) {
             Ok(t) => {
                 tracing::info!("Streaming transcriber initialized");
                 Some(t)
@@ -885,9 +899,27 @@ fn run_background_diarization(meeting_id: String, audio_path: PathBuf) {
     let diar_model = crate::transcription::diarization_models::DiarizationModel::SortformerV2;
 
     if !diar_manager.model_exists(diar_model) {
-        tracing::warn!("Diarization model not found, skipping diarization");
-        mark_meeting_complete(&meeting_id);
-        return;
+        tracing::warn!("Diarization model not found, attempting automatic download");
+        match diar_manager.download_model(diar_model, |downloaded, total| {
+            let pct = if total > 0 {
+                (downloaded as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
+            tracing::info!(
+                "Diarization model download progress: {:.0}% ({:.1}/{:.1} MB)",
+                pct,
+                downloaded as f64 / 1024.0 / 1024.0,
+                total as f64 / 1024.0 / 1024.0
+            );
+        }) {
+            Ok(path) => tracing::info!("Diarization model downloaded: {}", path.display()),
+            Err(e) => {
+                tracing::error!("Failed to download diarization model: {}", e);
+                mark_meeting_complete(&meeting_id);
+                return;
+            }
+        }
     }
 
     let samples = match load_wav_samples(&audio_path) {

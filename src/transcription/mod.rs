@@ -7,8 +7,6 @@ pub mod diarization;
 pub mod diarization_models;
 pub mod models;
 pub mod openai;
-pub mod parakeet;
-pub mod parakeet_models;
 pub mod streaming;
 pub mod whisper;
 
@@ -73,8 +71,6 @@ impl Transcript {
 pub enum TranscriptionEngine {
     /// Local Whisper (whisper.cpp)
     Local,
-    /// Local Parakeet (ONNX Runtime)
-    Parakeet,
     /// Deepgram API
     Deepgram,
     /// OpenAI Whisper API

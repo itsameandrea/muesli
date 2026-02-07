@@ -7,7 +7,6 @@ use crate::storage::database::Database;
 use crate::storage::MeetingId;
 use crate::transcription::diarization_models::{DiarizationModel, DiarizationModelManager};
 use crate::transcription::models::{ModelManager, WhisperModel};
-use crate::transcription::parakeet_models::{ParakeetModel, ParakeetModelManager};
 use crate::waybar::WaybarStatus;
 use cpal::traits::{DeviceTrait, HostTrait};
 use std::io::Write;
@@ -305,7 +304,6 @@ async fn handle_config(action: ConfigCommands) -> Result<()> {
 async fn handle_models(engine: ModelEngine) -> Result<()> {
     match engine {
         ModelEngine::Whisper { action } => handle_whisper_models(action).await,
-        ModelEngine::Parakeet { action } => handle_parakeet_models(action).await,
         ModelEngine::Diarization { action } => handle_diarization_models(action).await,
     }
 }
@@ -357,60 +355,6 @@ async fn handle_whisper_models(action: ModelAction) -> Result<()> {
             })?;
 
             manager.delete_model(whisper_model)?;
-            println!("Deleted {} model", model);
-        }
-    }
-    Ok(())
-}
-
-async fn handle_parakeet_models(action: ModelAction) -> Result<()> {
-    let models_dir = config::loader::models_dir()?;
-    let manager = ParakeetModelManager::new(models_dir);
-
-    match action {
-        ModelAction::List => {
-            println!("{:<20} {:<12} {:<10}", "Model", "Size (MB)", "Downloaded");
-            println!("{}", "-".repeat(45));
-
-            for (model, exists, size) in manager.list_all() {
-                let status = if exists { "✓" } else { "-" };
-                println!("{:<20} {:<12} {:<10}", model, size, status);
-            }
-        }
-        ModelAction::Download { model } => {
-            let parakeet_model = ParakeetModel::from_str(&model).ok_or_else(|| {
-                crate::error::MuesliError::Config(format!(
-                    "Unknown model: {}. Use: parakeet-v3, parakeet-v3-int8, nemotron-streaming",
-                    model
-                ))
-            })?;
-
-            println!(
-                "Downloading {} (~{} MB total)...",
-                parakeet_model,
-                parakeet_model.size_mb()
-            );
-
-            let path = manager.download_model(parakeet_model, |filename, downloaded, total| {
-                let percent = (downloaded as f64 / total as f64 * 100.0) as u32;
-                print!(
-                    "\r{}: {}% ({}/{} MB)    ",
-                    filename,
-                    percent,
-                    downloaded / 1024 / 1024,
-                    total / 1024 / 1024
-                );
-                std::io::stdout().flush().ok();
-            })?;
-
-            println!("\nDownloaded to: {}", path.display());
-        }
-        ModelAction::Delete { model } => {
-            let parakeet_model = ParakeetModel::from_str(&model).ok_or_else(|| {
-                crate::error::MuesliError::Config(format!("Unknown model: {}", model))
-            })?;
-
-            manager.delete_model(parakeet_model)?;
             println!("Deleted {} model", model);
         }
     }
@@ -581,17 +525,7 @@ async fn handle_setup() -> Result<()> {
         ("large-v3-turbo", 1620, "Fast + high quality"),
     ];
 
-    let parakeet_models = vec![
-        ("parakeet-v3", 632, "Full precision, best quality"),
-        (
-            "parakeet-v3-int8",
-            217,
-            "INT8 quantized, fastest (recommended)",
-        ),
-    ];
-
     let whisper_manager = ModelManager::new(models_dir.clone());
-    let parakeet_manager = ParakeetModelManager::new(models_dir.clone());
 
     let mut model_options: Vec<String> = vec![];
 
@@ -599,20 +533,6 @@ async fn handle_setup() -> Result<()> {
     for (name, size, desc) in &whisper_models {
         let model = WhisperModel::from_str(name).unwrap();
         let installed = if whisper_manager.model_exists(model) {
-            " [installed]"
-        } else {
-            ""
-        };
-        model_options.push(format!(
-            "{:<18} ({:>4} MB) - {}{}",
-            name, size, desc, installed
-        ));
-    }
-
-    model_options.push("--- Parakeet Models (ONNX, 20-30x faster) ---".to_string());
-    for (name, size, desc) in &parakeet_models {
-        let model = ParakeetModel::from_str(name).unwrap();
-        let installed = if parakeet_manager.model_exists(model) {
             " [installed]"
         } else {
             ""
@@ -656,29 +576,6 @@ async fn handle_setup() -> Result<()> {
         }
 
         update_transcription_config("whisper", model_name)?;
-    } else if selection >= 8 && selection <= 9 {
-        let model_name = parakeet_models[selection - 8].0;
-        let model = ParakeetModel::from_str(model_name).unwrap();
-
-        if parakeet_manager.model_exists(model) {
-            println!("  Model '{}' is already installed", model_name);
-        } else {
-            println!("  Downloading {} model...", model_name);
-            let path = parakeet_manager.download_model(model, |filename, downloaded, total| {
-                let percent = (downloaded as f64 / total as f64 * 100.0) as u32;
-                print!(
-                    "\r  {}: {}% ({}/{} MB)    ",
-                    filename,
-                    percent,
-                    downloaded / 1024 / 1024,
-                    total / 1024 / 1024
-                );
-                std::io::stdout().flush().ok();
-            })?;
-            println!("\n  Downloaded to: {}", path.display());
-        }
-
-        update_transcription_config("parakeet", model_name)?;
     }
     println!();
 
@@ -719,47 +616,9 @@ async fn handle_setup() -> Result<()> {
     }
     println!();
 
-    println!("[6/11] Streaming Transcription (Optional)");
-    println!("  Nemotron streaming enables real-time transcription during recording.");
-    println!("  No wait time after stopping - transcription is already done!");
-    println!();
-
-    let nemotron_model = ParakeetModel::NemotronStreaming;
-    let parakeet_manager = ParakeetModelManager::new(models_dir.clone());
-
-    if parakeet_manager.model_exists(nemotron_model) {
-        println!("  Nemotron streaming model already installed");
-    } else {
-        let download_nemotron = Confirm::with_theme(&ColorfulTheme::default())
-            .with_prompt("Download Nemotron streaming model (~2.5 GB)?")
-            .default(false)
-            .interact()
-            .unwrap_or(false);
-
-        if download_nemotron {
-            println!("  Downloading nemotron-streaming (this may take a while)...");
-            let path = parakeet_manager.download_model(
-                nemotron_model,
-                |filename, downloaded, total| {
-                    let percent = (downloaded as f64 / total as f64 * 100.0) as u32;
-                    print!(
-                        "\r  {}: {}% ({}/{} MB)    ",
-                        filename,
-                        percent,
-                        downloaded / 1024 / 1024,
-                        total / 1024 / 1024
-                    );
-                    std::io::stdout().flush().ok();
-                },
-            )?;
-            println!("\n  Downloaded to: {}", path.display());
-        } else {
-            println!("  Skipping streaming model");
-            println!(
-                "  (You can download later with: muesli parakeet download nemotron-streaming)"
-            );
-        }
-    }
+    println!("[6/11] Faster Processing on Stop");
+    println!("  muesli transcribes incrementally with Whisper while recording.");
+    println!("  This reduces wait time after stopping for long meetings.");
     println!();
 
     println!("[7/11] LLM for Meeting Notes");
@@ -1496,46 +1355,25 @@ fn run_transcription(
     models_dir: &std::path::Path,
     audio_path: &std::path::Path,
 ) -> Result<crate::transcription::Transcript> {
-    match config.transcription.engine.as_str() {
-        "parakeet" => {
-            let manager = ParakeetModelManager::new(models_dir.to_path_buf());
-            let model = ParakeetModel::from_str(&config.transcription.model)
-                .unwrap_or(ParakeetModel::TdtV3Int8);
+    let manager = ModelManager::new(models_dir.to_path_buf());
+    let model = WhisperModel::from_str(config.transcription.effective_model())
+        .unwrap_or(WhisperModel::Base);
 
-            if !manager.model_exists(model) {
-                return Err(crate::error::MuesliError::Config(format!(
-                    "Parakeet model {:?} not found. Run: muesli models parakeet download {}",
-                    model, config.transcription.model
-                ))
-                .into());
-            }
-
-            let model_dir = manager.model_dir(model);
-            let mut engine = crate::transcription::parakeet::ParakeetEngine::new();
-            engine.load_model(&model_dir, config.transcription.use_gpu)?;
-            crate::transcription::parakeet::transcribe_wav_file(&mut engine, audio_path)
-        }
-        "whisper" | _ => {
-            let manager = ModelManager::new(models_dir.to_path_buf());
-            let model =
-                WhisperModel::from_str(&config.transcription.model).unwrap_or(WhisperModel::Base);
-
-            if !manager.model_exists(model) {
-                return Err(crate::error::MuesliError::Config(format!(
-                    "Whisper model {:?} not found. Run: muesli models whisper download {}",
-                    model, config.transcription.model
-                ))
-                .into());
-            }
-
-            let model_path = manager.model_path(model);
-            let engine = crate::transcription::whisper::WhisperEngine::new(
-                &model_path,
-                config.transcription.use_gpu,
-            )?;
-            crate::transcription::whisper::transcribe_wav_file(&engine, audio_path)
-        }
+    if !manager.model_exists(model) {
+        return Err(crate::error::MuesliError::Config(format!(
+            "Whisper model {:?} not found. Run: muesli models whisper download {}",
+            model,
+            config.transcription.effective_model()
+        ))
+        .into());
     }
+
+    let model_path = manager.model_path(model);
+    let engine = crate::transcription::whisper::WhisperEngine::new(
+        &model_path,
+        config.transcription.use_gpu,
+    )?;
+    crate::transcription::whisper::transcribe_wav_file(&engine, audio_path)
 }
 
 fn run_diarization(
@@ -1789,8 +1627,6 @@ fn update_transcription_config(engine: &str, model: &str) -> Result<()> {
                 format!("model = \"{}\"", model)
             } else if engine == "whisper" && trimmed.starts_with("whisper_model =") {
                 format!("whisper_model = \"{}\"", model)
-            } else if engine == "parakeet" && trimmed.starts_with("parakeet_model =") {
-                format!("parakeet_model = \"{}\"", model)
             } else {
                 line.to_string()
             }

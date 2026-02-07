@@ -280,10 +280,6 @@ muesli config show|edit
 # Models - Whisper (whisper.cpp)
 muesli models whisper list|download|delete <model>
 
-# Models - Parakeet (ONNX, 20-30x faster)
-muesli models parakeet list|download|delete <model>
-# Models: parakeet-v3, parakeet-v3-int8, nemotron-streaming
-
 # Models - Diarization (speaker identification)
 muesli models diarization list|download|delete <model>
 # Models: sortformer-v2
@@ -307,8 +303,8 @@ capture_system_audio = true
 sample_rate = 16000
 
 [transcription]
-engine = "parakeet"          # "whisper" or "parakeet"
-model = "parakeet-v3-int8"   # Model name for selected engine
+engine = "whisper"
+model = "base"               # Whisper model name
 use_gpu = false
 fallback_to_local = true
 
@@ -345,6 +341,6 @@ status_file = "..."          # Optional, defaults to $XDG_RUNTIME_DIR/muesli/way
 
 ### TranscriptionConfig.effective_model()
 
-The `effective_model()` method returns the correct model based on engine:
+The `effective_model()` method returns the Whisper model:
 - If `model` is set and non-default, use it
-- Otherwise fall back to legacy `whisper_model`/`parakeet_model` fields (for backwards compatibility)
+- Otherwise fall back to legacy `whisper_model` field (for backwards compatibility)

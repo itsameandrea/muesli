@@ -146,11 +146,6 @@ pub enum ModelEngine {
         #[command(subcommand)]
         action: ModelAction,
     },
-    /// Parakeet models (ONNX, 20-30x faster)
-    Parakeet {
-        #[command(subcommand)]
-        action: ModelAction,
-    },
     /// Speaker diarization models
     Diarization {
         #[command(subcommand)]

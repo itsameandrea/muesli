@@ -1,11 +1,18 @@
 use crate::error::{MuesliError, Result};
+use crate::transcription::whisper::WhisperEngine;
 use crate::transcription::TranscriptSegment;
-use parakeet_rs::Nemotron;
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 
-const CHUNK_SIZE_SAMPLES: usize = 8960; // 560ms at 16kHz
+const SAMPLE_RATE: usize = 16000;
+const WHISPER_CHUNK_SAMPLES: usize = 15 * SAMPLE_RATE;
+
+#[derive(Debug, Clone)]
+pub struct WhisperStreamingConfig {
+    pub model_path: std::path::PathBuf,
+    pub use_gpu: bool,
+}
 
 pub struct StreamingTranscriber {
     audio_tx: mpsc::Sender<AudioCommand>,
@@ -20,14 +27,12 @@ enum AudioCommand {
 }
 
 impl StreamingTranscriber {
-    pub fn new<P: AsRef<Path>>(model_dir: P) -> Result<Self> {
-        let model_path = model_dir.as_ref().to_path_buf();
-
+    pub fn new(config: WhisperStreamingConfig) -> Result<Self> {
         let (audio_tx, audio_rx) = mpsc::channel::<AudioCommand>();
         let (segment_tx, segment_rx) = mpsc::channel::<TranscriptSegment>();
 
         let handle = thread::spawn(move || {
-            if let Err(e) = run_transcription_worker(model_path, audio_rx, segment_tx) {
+            if let Err(e) = run_transcription_worker(config, audio_rx, segment_tx) {
                 tracing::error!("Streaming transcription worker error: {}", e);
             }
         });
@@ -81,86 +86,60 @@ impl StreamingTranscriber {
 }
 
 fn run_transcription_worker(
-    model_path: std::path::PathBuf,
+    config: WhisperStreamingConfig,
     audio_rx: mpsc::Receiver<AudioCommand>,
     segment_tx: mpsc::Sender<TranscriptSegment>,
 ) -> Result<()> {
-    tracing::info!("Loading Nemotron streaming model from {:?}", model_path);
+    run_whisper_worker(
+        config.model_path.as_ref(),
+        config.use_gpu,
+        audio_rx,
+        segment_tx,
+    )
+}
 
-    let mut model = Nemotron::from_pretrained(&model_path, None)
-        .map_err(|e| MuesliError::Transcription(format!("Failed to load Nemotron: {}", e)))?;
-
-    tracing::info!("Nemotron model loaded, starting transcription worker");
+fn run_whisper_worker(
+    model_path: &Path,
+    use_gpu: bool,
+    audio_rx: mpsc::Receiver<AudioCommand>,
+    segment_tx: mpsc::Sender<TranscriptSegment>,
+) -> Result<()> {
+    tracing::info!("Loading Whisper streaming model from {:?}", model_path);
+    let engine = WhisperEngine::new(model_path, use_gpu)?;
+    tracing::info!("Whisper model loaded, starting incremental transcription worker");
 
     let mut audio_buffer: Vec<f32> = Vec::new();
-    let mut current_time_ms: u64 = 0;
-    let mut last_transcript = String::new();
+    let mut processed_ms: u64 = 0;
 
     loop {
         match audio_rx.recv() {
             Ok(AudioCommand::Samples(samples)) => {
                 audio_buffer.extend_from_slice(&samples);
 
-                while audio_buffer.len() >= CHUNK_SIZE_SAMPLES {
-                    let chunk: Vec<f32> = audio_buffer.drain(..CHUNK_SIZE_SAMPLES).collect();
-
-                    match model.transcribe_chunk(&chunk) {
-                        Ok(text) => {
-                            if !text.is_empty() && text != last_transcript {
-                                let new_text = if last_transcript.is_empty() {
-                                    text.clone()
-                                } else if text.starts_with(&last_transcript) {
-                                    text[last_transcript.len()..].trim().to_string()
-                                } else {
-                                    text.clone()
-                                };
-
-                                if !new_text.is_empty() {
-                                    let segment = TranscriptSegment::new(
-                                        current_time_ms,
-                                        current_time_ms + 560,
-                                        new_text,
-                                    );
-                                    let _ = segment_tx.send(segment);
-                                }
-                                last_transcript = text;
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Transcription chunk error: {}", e);
-                        }
+                while audio_buffer.len() >= WHISPER_CHUNK_SAMPLES {
+                    let chunk: Vec<f32> = audio_buffer.drain(..WHISPER_CHUNK_SAMPLES).collect();
+                    if let Err(e) =
+                        transcribe_whisper_chunk(&engine, &chunk, processed_ms, &segment_tx)
+                    {
+                        tracing::warn!("Whisper chunk transcription error: {}", e);
                     }
 
-                    current_time_ms += 560;
+                    processed_ms += (WHISPER_CHUNK_SAMPLES as u64 * 1000) / SAMPLE_RATE as u64;
                 }
             }
             Ok(AudioCommand::Flush) => {
-                for _ in 0..3 {
-                    let silent_chunk = vec![0.0f32; CHUNK_SIZE_SAMPLES];
-                    if let Ok(text) = model.transcribe_chunk(&silent_chunk) {
-                        if !text.is_empty() && text != last_transcript {
-                            let new_text = if text.starts_with(&last_transcript) {
-                                text[last_transcript.len()..].trim().to_string()
-                            } else {
-                                text.clone()
-                            };
-
-                            if !new_text.is_empty() {
-                                let segment = TranscriptSegment::new(
-                                    current_time_ms,
-                                    current_time_ms + 560,
-                                    new_text,
-                                );
-                                let _ = segment_tx.send(segment);
-                            }
-                            last_transcript = text;
-                        }
+                if !audio_buffer.is_empty() {
+                    let chunk = std::mem::take(&mut audio_buffer);
+                    if let Err(e) =
+                        transcribe_whisper_chunk(&engine, &chunk, processed_ms, &segment_tx)
+                    {
+                        tracing::warn!("Whisper final chunk transcription error: {}", e);
                     }
-                    current_time_ms += 560;
+                    processed_ms += (chunk.len() as u64 * 1000) / SAMPLE_RATE as u64;
                 }
             }
             Ok(AudioCommand::Stop) => {
-                tracing::info!("Streaming transcription worker stopping");
+                tracing::info!("Whisper incremental transcription worker stopping");
                 break;
             }
             Err(_) => {
@@ -168,6 +147,31 @@ fn run_transcription_worker(
                 break;
             }
         }
+    }
+
+    Ok(())
+}
+
+fn transcribe_whisper_chunk(
+    engine: &WhisperEngine,
+    samples: &[f32],
+    offset_ms: u64,
+    segment_tx: &mpsc::Sender<TranscriptSegment>,
+) -> Result<()> {
+    let transcript = engine.transcribe(samples)?;
+
+    for segment in transcript.segments {
+        let text = segment.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+
+        let adjusted = TranscriptSegment::new(
+            segment.start_ms + offset_ms,
+            segment.end_ms + offset_ms,
+            text.to_string(),
+        );
+        let _ = segment_tx.send(adjusted);
     }
 
     Ok(())
