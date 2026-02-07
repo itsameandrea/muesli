@@ -251,7 +251,9 @@ fn select_meeting_interactive(db: &Database) -> Result<String> {
     let meetings = db.list_meetings(20)?;
 
     if meetings.is_empty() {
-        return Err(crate::error::MuesliError::Config("No meetings found".to_string()));
+        return Err(crate::error::MuesliError::Config(
+            "No meetings found".to_string(),
+        ));
     }
 
     let items: Vec<String> = meetings
@@ -1355,8 +1357,8 @@ fn run_transcription(
     audio_path: &std::path::Path,
 ) -> Result<crate::transcription::Transcript> {
     let manager = ModelManager::new(models_dir.to_path_buf());
-    let model = WhisperModel::parse(config.transcription.effective_model())
-        .unwrap_or(WhisperModel::Base);
+    let model =
+        WhisperModel::parse(config.transcription.effective_model()).unwrap_or(WhisperModel::Base);
 
     if !manager.model_exists(model) {
         return Err(crate::error::MuesliError::Config(format!(

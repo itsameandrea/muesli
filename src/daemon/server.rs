@@ -687,8 +687,8 @@ fn select_streaming_backend() -> Option<WhisperStreamingConfig> {
         return None;
     }
 
-    let whisper_model = WhisperModel::parse(config.transcription.effective_model())
-        .unwrap_or(WhisperModel::Base);
+    let whisper_model =
+        WhisperModel::parse(config.transcription.effective_model()).unwrap_or(WhisperModel::Base);
     let whisper_manager = ModelManager::new(models_dir);
 
     if whisper_manager.model_exists(whisper_model) {
