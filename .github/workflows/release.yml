@@ -22,6 +22,9 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             features: ""
             suffix: linux-x86_64-cpu
+          - target: x86_64-unknown-linux-gnu
+            features: vulkan
+            suffix: linux-x86_64-vulkan
     steps:
       - uses: actions/checkout@v4
 
@@ -37,6 +40,7 @@ jobs:
             libclang-dev \
             libasound2-dev \
             libdbus-1-dev \
+            libvulkan-dev \
             pkg-config
 
       - name: Build

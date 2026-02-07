@@ -107,6 +107,33 @@ build_from_source() {
     rm -rf "$tmp_dir"
 }
 
+DOWNLOADED_VARIANT=""
+
+download_binary() {
+    local version="$1"
+    local variant="$2"
+
+    local url="https://github.com/$REPO/releases/download/$version/muesli-$variant"
+
+    print_info "Downloading from $url..."
+    if ! curl -fsSL "$url" -o "$INSTALL_DIR/muesli"; then
+        if [ "$variant" = "linux-x86_64-vulkan" ]; then
+            local fallback_variant="linux-x86_64-cpu"
+            local fallback_url="https://github.com/$REPO/releases/download/$version/muesli-$fallback_variant"
+
+            print_warn "Vulkan binary not found for $version. Falling back to CPU build..."
+            print_info "Downloading from $fallback_url..."
+            curl -fsSL "$fallback_url" -o "$INSTALL_DIR/muesli"
+            DOWNLOADED_VARIANT="$fallback_variant"
+            return 0
+        fi
+
+        return 1
+    fi
+
+    DOWNLOADED_VARIANT="$variant"
+}
+
 main() {
     echo ""
     echo "=========================================="
@@ -129,21 +156,21 @@ main() {
     else
         print_info "Installing muesli $version ($variant)..."
         
-        local url="https://github.com/$REPO/releases/download/$version/muesli-$variant"
-        
         mkdir -p "$INSTALL_DIR"
-        
-        print_info "Downloading from $url..."
-        if ! curl -fsSL "$url" -o "$INSTALL_DIR/muesli"; then
+
+        if ! download_binary "$version" "$variant"; then
             print_error "Download failed. Building from source instead..."
 
             build_from_source "$version"
+        else
+            variant="$DOWNLOADED_VARIANT"
         fi
         
         chmod +x "$INSTALL_DIR/muesli"
         
         print_info "Verifying checksum..."
-        if curl -fsSL "$url.sha256" -o /tmp/muesli.sha256 2>/dev/null; then
+        local checksum_url="https://github.com/$REPO/releases/download/$version/muesli-$variant.sha256"
+        if curl -fsSL "$checksum_url" -o /tmp/muesli.sha256 2>/dev/null; then
             (cd "$INSTALL_DIR" && sha256sum -c /tmp/muesli.sha256) || print_warn "Checksum verification failed"
             rm -f /tmp/muesli.sha256
         fi
