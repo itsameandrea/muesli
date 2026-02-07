@@ -9,7 +9,7 @@ pub enum DiarizationModel {
 }
 
 impl DiarizationModel {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().replace("-", "").replace("_", "").as_str() {
             "sortformer" | "sortformerv2" | "sortformer2" => Some(Self::SortformerV2),
             _ => None,

@@ -251,7 +251,7 @@ fn select_meeting_interactive(db: &Database) -> Result<String> {
     let meetings = db.list_meetings(20)?;
 
     if meetings.is_empty() {
-        return Err(crate::error::MuesliError::Config("No meetings found".to_string()).into());
+        return Err(crate::error::MuesliError::Config("No meetings found".to_string()));
     }
 
     let items: Vec<String> = meetings
@@ -323,7 +323,7 @@ async fn handle_whisper_models(action: ModelAction) -> Result<()> {
             }
         }
         ModelAction::Download { model } => {
-            let whisper_model = WhisperModel::from_str(&model).ok_or_else(|| {
+            let whisper_model = WhisperModel::parse(&model).ok_or_else(|| {
                 crate::error::MuesliError::Config(format!(
                     "Unknown model: {}. Use: tiny, base, small, medium, large, large-v3-turbo, distil-large-v3",
                     model
@@ -350,7 +350,7 @@ async fn handle_whisper_models(action: ModelAction) -> Result<()> {
             println!("\nDownloaded to: {}", path.display());
         }
         ModelAction::Delete { model } => {
-            let whisper_model = WhisperModel::from_str(&model).ok_or_else(|| {
+            let whisper_model = WhisperModel::parse(&model).ok_or_else(|| {
                 crate::error::MuesliError::Config(format!("Unknown model: {}", model))
             })?;
 
@@ -376,7 +376,7 @@ async fn handle_diarization_models(action: ModelAction) -> Result<()> {
             }
         }
         ModelAction::Download { model } => {
-            let diar_model = DiarizationModel::from_str(&model).ok_or_else(|| {
+            let diar_model = DiarizationModel::parse(&model).ok_or_else(|| {
                 crate::error::MuesliError::Config(format!(
                     "Unknown model: {}. Use: sortformer-v2",
                     model
@@ -409,7 +409,7 @@ async fn handle_diarization_models(action: ModelAction) -> Result<()> {
             println!("\nDownloaded to: {}", path.display());
         }
         ModelAction::Delete { model } => {
-            let diar_model = DiarizationModel::from_str(&model).ok_or_else(|| {
+            let diar_model = DiarizationModel::parse(&model).ok_or_else(|| {
                 crate::error::MuesliError::Config(format!("Unknown model: {}", model))
             })?;
 
@@ -531,7 +531,7 @@ async fn handle_setup() -> Result<()> {
 
     model_options.push("--- Whisper Models (whisper.cpp) ---".to_string());
     for (name, size, desc) in &whisper_models {
-        let model = WhisperModel::from_str(name).unwrap();
+        let model = WhisperModel::parse(name).unwrap();
         let installed = if whisper_manager.model_exists(model) {
             " [installed]"
         } else {
@@ -554,9 +554,9 @@ async fn handle_setup() -> Result<()> {
 
     if selection == 0 || selection == 7 {
         println!("  Skipping model download");
-    } else if selection >= 1 && selection <= 6 {
+    } else if (1..=6).contains(&selection) {
         let model_name = whisper_models[selection - 1].0;
-        let model = WhisperModel::from_str(model_name).unwrap();
+        let model = WhisperModel::parse(model_name).unwrap();
 
         if whisper_manager.model_exists(model) {
             println!("  Model '{}' is already installed", model_name);
@@ -1324,8 +1324,7 @@ fn select_meeting_with_audio(db: &Database) -> Result<String> {
     if meetings.is_empty() {
         return Err(crate::error::MuesliError::Config(
             "No meetings with audio files found".to_string(),
-        )
-        .into());
+        ));
     }
 
     let items: Vec<String> = meetings
@@ -1356,7 +1355,7 @@ fn run_transcription(
     audio_path: &std::path::Path,
 ) -> Result<crate::transcription::Transcript> {
     let manager = ModelManager::new(models_dir.to_path_buf());
-    let model = WhisperModel::from_str(config.transcription.effective_model())
+    let model = WhisperModel::parse(config.transcription.effective_model())
         .unwrap_or(WhisperModel::Base);
 
     if !manager.model_exists(model) {
@@ -1364,8 +1363,7 @@ fn run_transcription(
             "Whisper model {:?} not found. Run: muesli models whisper download {}",
             model,
             config.transcription.effective_model()
-        ))
-        .into());
+        )));
     }
 
     let model_path = manager.model_path(model);

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Main configuration struct
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MuesliConfig {
     #[serde(default)]
     pub audio: AudioConfig,
@@ -30,22 +30,6 @@ pub struct MuesliConfig {
 
     #[serde(default)]
     pub qmd: QmdConfig,
-}
-
-impl Default for MuesliConfig {
-    fn default() -> Self {
-        Self {
-            audio: AudioConfig::default(),
-            transcription: TranscriptionConfig::default(),
-            llm: LlmConfig::default(),
-            storage: StorageConfig::default(),
-            daemon: DaemonConfig::default(),
-            detection: DetectionConfig::default(),
-            audio_cues: AudioCuesConfig::default(),
-            waybar: WaybarConfig::default(),
-            qmd: QmdConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,7 +149,7 @@ impl LlmConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StorageConfig {
     /// Directory for meeting notes
     pub notes_dir: Option<PathBuf>,
@@ -173,16 +157,6 @@ pub struct StorageConfig {
     pub database_path: Option<PathBuf>,
     /// Directory for audio recordings
     pub recordings_dir: Option<PathBuf>,
-}
-
-impl Default for StorageConfig {
-    fn default() -> Self {
-        Self {
-            notes_dir: None,
-            database_path: None,
-            recordings_dir: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

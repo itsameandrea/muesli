@@ -461,7 +461,7 @@ async fn handle_request(
                         "Recording started, checking for meeting windows. meeting_detected={:?}",
                         state.meeting_detected
                     );
-                    let detected_app = state.meeting_detected.or_else(|| find_any_meeting_window());
+                    let detected_app = state.meeting_detected.or_else(find_any_meeting_window);
 
                     if let Some(app) = detected_app {
                         state.meeting_detected = Some(app);
@@ -687,7 +687,7 @@ fn select_streaming_backend() -> Option<WhisperStreamingConfig> {
         return None;
     }
 
-    let whisper_model = WhisperModel::from_str(config.transcription.effective_model())
+    let whisper_model = WhisperModel::parse(config.transcription.effective_model())
         .unwrap_or(WhisperModel::Base);
     let whisper_manager = ModelManager::new(models_dir);
 
@@ -982,7 +982,7 @@ fn run_background_diarization(meeting_id: String, audio_path: PathBuf) {
     run_background_summarization(meeting_id.clone());
 
     mark_meeting_complete(&meeting_id);
-    let _ = notification::notify_status(&format!("Processing complete for meeting"));
+    let _ = notification::notify_status("Processing complete for meeting");
 }
 
 fn run_background_summarization(meeting_id: String) {

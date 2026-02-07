@@ -15,7 +15,7 @@ pub enum WhisperModel {
 }
 
 impl WhisperModel {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().replace("-", "").replace("_", "").as_str() {
             "tiny" => Some(Self::Tiny),
             "base" => Some(Self::Base),
@@ -171,7 +171,7 @@ impl ModelManager {
         let mut buffer = [0u8; 8192];
 
         loop {
-            let bytes_read = reader.read(&mut buffer).map_err(|e| MuesliError::Io(e))?;
+            let bytes_read = reader.read(&mut buffer).map_err(MuesliError::Io)?;
 
             if bytes_read == 0 {
                 break;
@@ -210,9 +210,9 @@ mod tests {
 
     #[test]
     fn test_model_from_str() {
-        assert_eq!(WhisperModel::from_str("base"), Some(WhisperModel::Base));
-        assert_eq!(WhisperModel::from_str("BASE"), Some(WhisperModel::Base));
-        assert_eq!(WhisperModel::from_str("invalid"), None);
+        assert_eq!(WhisperModel::parse("base"), Some(WhisperModel::Base));
+        assert_eq!(WhisperModel::parse("BASE"), Some(WhisperModel::Base));
+        assert_eq!(WhisperModel::parse("invalid"), None);
     }
 
     #[test]

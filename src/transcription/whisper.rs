@@ -12,8 +12,10 @@ pub struct WhisperEngine {
 
 impl WhisperEngine {
     pub fn new<P: AsRef<Path>>(model_path: P, use_gpu: bool) -> Result<Self> {
-        let mut params = WhisperContextParameters::default();
-        params.use_gpu = use_gpu;
+        let params = WhisperContextParameters {
+            use_gpu,
+            ..Default::default()
+        };
 
         let ctx = WhisperContext::new_with_params(
             model_path.as_ref().to_str().unwrap_or_default(),
