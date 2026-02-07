@@ -123,7 +123,9 @@ download_binary() {
 
             print_warn "Vulkan binary not found for $version. Falling back to CPU build..."
             print_info "Downloading from $fallback_url..."
-            curl -fsSL "$fallback_url" -o "$INSTALL_DIR/muesli"
+            if ! curl -fsSL "$fallback_url" -o "$INSTALL_DIR/muesli"; then
+                return 1
+            fi
             DOWNLOADED_VARIANT="$fallback_variant"
             return 0
         fi

@@ -41,6 +41,7 @@ jobs:
             libasound2-dev \
             libdbus-1-dev \
             libvulkan-dev \
+            glslc \
             pkg-config
 
       - name: Build
