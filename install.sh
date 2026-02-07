@@ -64,6 +64,49 @@ stop_daemon() {
     rm -f "$INSTALL_DIR/muesli" 2>/dev/null || true
 }
 
+build_from_source() {
+    local ref="${1:-}"
+
+    if ! command -v cargo &>/dev/null; then
+        print_error "Rust/cargo not found. Install from https://rustup.rs/"
+        exit 1
+    fi
+
+    if ! command -v git &>/dev/null; then
+        print_error "git not found. Install git to build from source."
+        exit 1
+    fi
+
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+
+    print_info "Cloning muesli source..."
+    if ! git clone --depth 1 "https://github.com/$REPO.git" "$tmp_dir/muesli"; then
+        rm -rf "$tmp_dir"
+        print_error "Failed to clone source repository"
+        exit 1
+    fi
+
+    if [ -n "$ref" ]; then
+        if git -C "$tmp_dir/muesli" fetch --depth 1 origin "refs/tags/$ref" && git -C "$tmp_dir/muesli" checkout -q FETCH_HEAD; then
+            print_info "Building tag $ref from source..."
+        else
+            print_warn "Could not checkout tag $ref, building default branch instead"
+        fi
+    fi
+
+    print_info "Building muesli from source..."
+    (
+        cd "$tmp_dir/muesli"
+        cargo build --release
+    )
+
+    mkdir -p "$INSTALL_DIR"
+    cp "$tmp_dir/muesli/target/release/muesli" "$INSTALL_DIR/"
+    chmod +x "$INSTALL_DIR/muesli"
+    rm -rf "$tmp_dir"
+}
+
 main() {
     echo ""
     echo "=========================================="
@@ -78,18 +121,8 @@ main() {
     
     if [ -z "$version" ]; then
         print_warn "No releases found. Building from source..."
-        
-        if ! command -v cargo &>/dev/null; then
-            print_error "Rust/cargo not found. Install from https://rustup.rs/"
-            exit 1
-        fi
-        
-        print_info "Building muesli from source..."
-        cargo build --release
-        
-        mkdir -p "$INSTALL_DIR"
-        cp target/release/muesli "$INSTALL_DIR/"
-        chmod +x "$INSTALL_DIR/muesli"
+
+        build_from_source
         
         local built_version=$("$INSTALL_DIR/muesli" --version 2>/dev/null || echo "unknown")
         print_info "Built: $built_version"
@@ -103,15 +136,8 @@ main() {
         print_info "Downloading from $url..."
         if ! curl -fsSL "$url" -o "$INSTALL_DIR/muesli"; then
             print_error "Download failed. Building from source instead..."
-            
-            if ! command -v cargo &>/dev/null; then
-                print_error "Rust/cargo not found. Install from https://rustup.rs/"
-                exit 1
-            fi
-            
-            print_info "Building muesli..."
-            cargo build --release
-            cp target/release/muesli "$INSTALL_DIR/"
+
+            build_from_source "$version"
         fi
         
         chmod +x "$INSTALL_DIR/muesli"
