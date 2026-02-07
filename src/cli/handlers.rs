@@ -893,7 +893,18 @@ async fn handle_update() -> Result<()> {
     let repo_dir = std::path::Path::new(source_dir);
     if !repo_dir.join("Cargo.toml").exists() {
         eprintln!("Source directory no longer exists: {}", source_dir);
-        eprintln!("Rebuild manually: cd /path/to/muesli && cargo build --release");
+        eprintln!("Falling back to latest GitHub release binary...");
+        println!();
+
+        let install_path = std::env::current_exe().ok();
+        if let Some(path) = install_path {
+            if let Err(e) = update_from_latest_release(current_version, &path) {
+                eprintln!("Release update failed: {}", e);
+            }
+        } else {
+            eprintln!("Could not determine installed binary path for update");
+        }
+
         return Ok(());
     }
 
@@ -949,6 +960,126 @@ async fn handle_update() -> Result<()> {
     println!("Updated: {}", new_version);
 
     Ok(())
+}
+
+fn update_from_latest_release(current_version: &str, install_path: &std::path::Path) -> Result<()> {
+    let release = fetch_latest_release()?;
+    let tag = release
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            crate::error::MuesliError::Config("Latest release tag missing".to_string())
+        })?;
+
+    if tag.trim_start_matches('v') == current_version {
+        println!("Already on latest release: {}", tag);
+        return Ok(());
+    }
+
+    let assets = release
+        .get("assets")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| {
+            crate::error::MuesliError::Config("Latest release assets missing".to_string())
+        })?;
+
+    let candidates = detect_release_asset_candidates();
+    let selected = candidates.iter().find_map(|suffix| {
+        let asset_name = format!("muesli-{}", suffix);
+        assets.iter().find_map(|asset| {
+            let name = asset.get("name").and_then(|v| v.as_str())?;
+            if name != asset_name {
+                return None;
+            }
+
+            let url = asset.get("browser_download_url").and_then(|v| v.as_str())?;
+            Some((name.to_string(), url.to_string()))
+        })
+    });
+
+    let (asset_name, asset_url) = match selected {
+        Some(v) => v,
+        None => {
+            let available: Vec<String> = assets
+                .iter()
+                .filter_map(|asset| asset.get("name").and_then(|v| v.as_str()))
+                .filter(|name| name.starts_with("muesli-"))
+                .map(|s| s.to_string())
+                .collect();
+
+            return Err(crate::error::MuesliError::Config(format!(
+                "No matching release asset for this platform. Available: {}",
+                available.join(", ")
+            )));
+        }
+    };
+
+    println!("Updating to {} using {}...", tag, asset_name);
+
+    let client = reqwest::blocking::Client::new();
+    let bytes = client
+        .get(&asset_url)
+        .header(reqwest::header::USER_AGENT, "muesli-updater")
+        .send()?
+        .error_for_status()?
+        .bytes()?;
+
+    let tmp_path = install_path.with_extension("update.tmp");
+    std::fs::write(&tmp_path, &bytes)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&tmp_path)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&tmp_path, perms)?;
+    }
+
+    let _ = std::fs::remove_file(install_path);
+    std::fs::rename(&tmp_path, install_path)?;
+
+    let new_version = std::process::Command::new(install_path)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    println!("Updated: {}", new_version);
+    Ok(())
+}
+
+fn fetch_latest_release() -> Result<serde_json::Value> {
+    let client = reqwest::blocking::Client::new();
+    let response = client
+        .get("https://api.github.com/repos/itsameandrea/muesli/releases/latest")
+        .header(reqwest::header::USER_AGENT, "muesli-updater")
+        .send()?
+        .error_for_status()?;
+
+    Ok(response.json()?)
+}
+
+fn detect_release_asset_candidates() -> Vec<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => {
+            if std::process::Command::new("vulkaninfo")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+            {
+                vec!["linux-x86_64-vulkan", "linux-x86_64-cpu"]
+            } else {
+                vec!["linux-x86_64-cpu", "linux-x86_64-vulkan"]
+            }
+        }
+        ("macos", "x86_64") => vec!["macos-x86_64"],
+        ("macos", "aarch64") => vec!["macos-arm64"],
+        _ => vec!["linux-x86_64-cpu"],
+    }
 }
 
 async fn handle_uninstall() -> Result<()> {
