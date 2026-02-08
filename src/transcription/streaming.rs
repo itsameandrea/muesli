@@ -6,7 +6,9 @@ use std::sync::mpsc;
 use std::thread;
 
 const SAMPLE_RATE: usize = 16000;
-const WHISPER_CHUNK_SAMPLES: usize = 15 * SAMPLE_RATE;
+const WHISPER_CHUNK_SAMPLES: usize = 20 * SAMPLE_RATE;
+const WHISPER_OVERLAP_SAMPLES: usize = 4 * SAMPLE_RATE;
+const WHISPER_STEP_SAMPLES: usize = WHISPER_CHUNK_SAMPLES - WHISPER_OVERLAP_SAMPLES;
 
 #[derive(Debug, Clone)]
 pub struct WhisperStreamingConfig {
@@ -110,6 +112,7 @@ fn run_whisper_worker(
 
     let mut audio_buffer: Vec<f32> = Vec::new();
     let mut processed_ms: u64 = 0;
+    let mut last_emitted_end_ms: u64 = 0;
 
     loop {
         match audio_rx.recv() {
@@ -117,22 +120,35 @@ fn run_whisper_worker(
                 audio_buffer.extend_from_slice(&samples);
 
                 while audio_buffer.len() >= WHISPER_CHUNK_SAMPLES {
-                    let chunk: Vec<f32> = audio_buffer.drain(..WHISPER_CHUNK_SAMPLES).collect();
-                    if let Err(e) =
-                        transcribe_whisper_chunk(&engine, &chunk, processed_ms, &segment_tx)
-                    {
+                    let chunk: Vec<f32> = audio_buffer[..WHISPER_CHUNK_SAMPLES].to_vec();
+                    let commit_until_ms =
+                        processed_ms + (WHISPER_STEP_SAMPLES as u64 * 1000) / SAMPLE_RATE as u64;
+                    if let Err(e) = transcribe_whisper_chunk(
+                        &engine,
+                        &chunk,
+                        processed_ms,
+                        Some(commit_until_ms),
+                        &mut last_emitted_end_ms,
+                        &segment_tx,
+                    ) {
                         tracing::warn!("Whisper chunk transcription error: {}", e);
                     }
 
-                    processed_ms += (WHISPER_CHUNK_SAMPLES as u64 * 1000) / SAMPLE_RATE as u64;
+                    audio_buffer.drain(..WHISPER_STEP_SAMPLES);
+                    processed_ms = commit_until_ms;
                 }
             }
             Ok(AudioCommand::Flush) => {
                 if !audio_buffer.is_empty() {
                     let chunk = std::mem::take(&mut audio_buffer);
-                    if let Err(e) =
-                        transcribe_whisper_chunk(&engine, &chunk, processed_ms, &segment_tx)
-                    {
+                    if let Err(e) = transcribe_whisper_chunk(
+                        &engine,
+                        &chunk,
+                        processed_ms,
+                        None,
+                        &mut last_emitted_end_ms,
+                        &segment_tx,
+                    ) {
                         tracing::warn!("Whisper final chunk transcription error: {}", e);
                     }
                     processed_ms += (chunk.len() as u64 * 1000) / SAMPLE_RATE as u64;
@@ -156,6 +172,8 @@ fn transcribe_whisper_chunk(
     engine: &WhisperEngine,
     samples: &[f32],
     offset_ms: u64,
+    commit_until_ms: Option<u64>,
+    last_emitted_end_ms: &mut u64,
     segment_tx: &mpsc::Sender<TranscriptSegment>,
 ) -> Result<()> {
     let transcript = engine.transcribe(samples)?;
@@ -166,12 +184,22 @@ fn transcribe_whisper_chunk(
             continue;
         }
 
-        let adjusted = TranscriptSegment::new(
-            segment.start_ms + offset_ms,
-            segment.end_ms + offset_ms,
-            text.to_string(),
-        );
+        let adjusted_start_ms = segment.start_ms + offset_ms;
+        let adjusted_end_ms = segment.end_ms + offset_ms;
+
+        if let Some(limit_ms) = commit_until_ms {
+            if adjusted_end_ms > limit_ms {
+                continue;
+            }
+        }
+
+        if adjusted_end_ms <= *last_emitted_end_ms {
+            continue;
+        }
+
+        let adjusted = TranscriptSegment::new(adjusted_start_ms, adjusted_end_ms, text.to_string());
         let _ = segment_tx.send(adjusted);
+        *last_emitted_end_ms = adjusted_end_ms;
     }
 
     Ok(())

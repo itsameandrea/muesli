@@ -13,6 +13,7 @@ use crate::storage::database::Database;
 use crate::storage::Meeting;
 use crate::transcription::models::{ModelManager, WhisperModel};
 use crate::transcription::streaming::{StreamingTranscriber, WhisperStreamingConfig};
+use crate::transcription::whisper::WhisperEngine;
 use crate::transcription::TranscriptSegment;
 use crate::waybar::{update_waybar_status, WaybarStatus};
 use cpal::Stream;
@@ -337,7 +338,7 @@ pub async fn run_daemon() -> Result<()> {
                             if let Some(path) = audio_path {
                                 if streaming_enabled && !segments.is_empty() {
                                     std::thread::spawn(move || {
-                                        run_background_diarization(meeting_id_clone, path);
+                                        run_background_diarization(meeting_id_clone, path, true);
                                     });
                                 } else {
                                     std::thread::spawn(move || {
@@ -575,7 +576,7 @@ async fn handle_request(
                 if streaming_enabled && !segments.is_empty() {
                     if let Some(path) = audio_path {
                         std::thread::spawn(move || {
-                            run_background_diarization(meeting_id_clone, path);
+                            run_background_diarization(meeting_id_clone, path, true);
                         });
                     }
                 } else if let Some(path) = audio_path {
@@ -882,8 +883,15 @@ async fn mic_only_task(
     }
 }
 
-fn run_background_diarization(meeting_id: String, audio_path: PathBuf) {
+fn run_background_diarization(meeting_id: String, audio_path: PathBuf, refine_transcript: bool) {
     tracing::info!("Starting background diarization for meeting {}", meeting_id);
+
+    if let Err(e) = refresh_transcript_from_audio(&meeting_id, &audio_path, refine_transcript) {
+        tracing::warn!(
+            "Transcript refinement failed, using existing segments: {}",
+            e
+        );
+    }
 
     let models_dir = match models_dir() {
         Ok(dir) => dir,
@@ -1139,7 +1147,55 @@ fn run_background_diarization_and_summarization(meeting_id: String, audio_path: 
         "Starting background processing for meeting {} (diarization + summarization)",
         meeting_id
     );
-    run_background_diarization(meeting_id, audio_path);
+    run_background_diarization(meeting_id, audio_path, false);
+}
+
+fn refresh_transcript_from_audio(
+    meeting_id: &str,
+    audio_path: &PathBuf,
+    refine_transcript: bool,
+) -> Result<()> {
+    let cfg = load_config()?;
+    if cfg.transcription.engine != "whisper" {
+        return Ok(());
+    }
+
+    let db_path = database_path()?;
+    let db = Database::open(&db_path)?;
+    let meeting_id_obj = crate::storage::MeetingId::from_string(meeting_id.to_string());
+    let existing_segments = db.get_transcript_segments(&meeting_id_obj)?;
+
+    if !refine_transcript && !existing_segments.is_empty() {
+        return Ok(());
+    }
+
+    let manager = ModelManager::new(models_dir()?);
+    let model =
+        WhisperModel::parse(cfg.transcription.effective_model()).unwrap_or(WhisperModel::Base);
+    if !manager.model_exists(model) {
+        tracing::warn!(
+            "Skipping final transcription refinement: Whisper model {:?} not found",
+            model
+        );
+        return Ok(());
+    }
+
+    let engine = WhisperEngine::new(manager.model_path(model), cfg.transcription.use_gpu)?;
+    let transcript = crate::transcription::whisper::transcribe_wav_file(&engine, audio_path)?;
+
+    if transcript.segments.is_empty() {
+        tracing::warn!("Final transcription returned no segments");
+        return Ok(());
+    }
+
+    db.delete_transcript_segments(&meeting_id_obj)?;
+    db.insert_transcript_segments(&meeting_id_obj, &transcript.segments)?;
+    tracing::info!(
+        "Stored refined transcript from full audio pass: {} segments",
+        transcript.segments.len()
+    );
+
+    Ok(())
 }
 
 fn mark_meeting_complete(meeting_id: &str) {
