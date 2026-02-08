@@ -569,12 +569,10 @@ async fn handle_request(
     }
 }
 
-/// Collect transcript segments from the recording thread's channel.
+/// Collect transcript segments by blocking until the recording thread finishes.
 ///
-/// Segments are forwarded through the channel during recording (on the fly),
-/// so most are already buffered and return instantly. The channel closes when
-/// the recording thread finishes (sender dropped), which is deterministic —
-/// no arbitrary timeout needed.
+/// WARNING: Do NOT add a timeout here. Large models on CPU (e.g. large-v3-turbo)
+/// can take 2+ minutes per chunk. A timeout caused v0.2.6 to lose all but 1 segment.
 fn collect_streaming_segments(
     segment_rx: Option<std::sync::mpsc::Receiver<TranscriptSegment>>,
 ) -> Vec<TranscriptSegment> {
@@ -585,22 +583,8 @@ fn collect_streaming_segments(
 
     let mut segments = Vec::new();
 
-    // recv_timeout returns instantly for buffered segments (produced during recording).
-    // It only blocks when the buffer is empty (waiting for final flush segments).
-    // Channel disconnects when the recording thread finishes — that's our stop signal.
-    loop {
-        match rx.recv_timeout(std::time::Duration::from_secs(120)) {
-            Ok(seg) => segments.push(seg),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                tracing::warn!(
-                    "Safety timeout waiting for recording thread (120s). \
-                     Collected {} segments so far. Proceeding with what we have.",
-                    segments.len()
-                );
-                break;
-            }
-        }
+    while let Ok(seg) = rx.recv() {
+        segments.push(seg);
     }
 
     tracing::info!("Collected {} transcript segments total", segments.len());
