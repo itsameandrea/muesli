@@ -37,7 +37,7 @@ pub struct DaemonState {
     pub audio_path: Option<PathBuf>,
     pub transcript_segments: Vec<TranscriptSegment>,
     pub streaming_enabled: bool,
-    pub segment_rx: Option<std::sync::mpsc::Receiver<Vec<TranscriptSegment>>>,
+    pub segment_rx: Option<std::sync::mpsc::Receiver<TranscriptSegment>>,
     pub meeting_monitor_running: Option<Arc<AtomicBool>>,
     pub detection_tx: Option<mpsc::Sender<DetectionEvent>>,
 }
@@ -281,23 +281,7 @@ pub async fn run_daemon() -> Result<()> {
 
                         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-                        let segments = if let Some(rx) = segment_rx {
-                            match rx.recv_timeout(std::time::Duration::from_secs(60)) {
-                                Ok(segs) => {
-                                    tracing::info!(
-                                        "Received {} segments from streaming transcriber",
-                                        segs.len()
-                                    );
-                                    segs
-                                }
-                                Err(_) => {
-                                    tracing::warn!("Timeout waiting for streaming segments (60s)");
-                                    Vec::new()
-                                }
-                            }
-                        } else {
-                            Vec::new()
-                        };
+                        let segments = collect_streaming_segments(segment_rx);
 
                         if let Some(meeting) = &mut state.current_meeting {
                             let ended = chrono::Utc::now();
@@ -518,23 +502,7 @@ async fn handle_request(
 
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-            let segments = if let Some(rx) = segment_rx {
-                match rx.recv_timeout(std::time::Duration::from_secs(60)) {
-                    Ok(segs) => {
-                        tracing::info!(
-                            "Received {} segments from streaming transcriber",
-                            segs.len()
-                        );
-                        segs
-                    }
-                    Err(_) => {
-                        tracing::warn!("Timeout waiting for streaming segments (60s)");
-                        Vec::new()
-                    }
-                }
-            } else {
-                Vec::new()
-            };
+            let segments = collect_streaming_segments(segment_rx);
 
             if let Some(meeting) = &mut state.current_meeting {
                 let ended = chrono::Utc::now();
@@ -601,6 +569,44 @@ async fn handle_request(
     }
 }
 
+/// Collect transcript segments from the recording thread's channel.
+///
+/// Segments are forwarded through the channel during recording (on the fly),
+/// so most are already buffered and return instantly. The channel closes when
+/// the recording thread finishes (sender dropped), which is deterministic —
+/// no arbitrary timeout needed.
+fn collect_streaming_segments(
+    segment_rx: Option<std::sync::mpsc::Receiver<TranscriptSegment>>,
+) -> Vec<TranscriptSegment> {
+    let rx = match segment_rx {
+        Some(rx) => rx,
+        None => return Vec::new(),
+    };
+
+    let mut segments = Vec::new();
+
+    // recv_timeout returns instantly for buffered segments (produced during recording).
+    // It only blocks when the buffer is empty (waiting for final flush segments).
+    // Channel disconnects when the recording thread finishes — that's our stop signal.
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_secs(120)) {
+            Ok(seg) => segments.push(seg),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                tracing::warn!(
+                    "Safety timeout waiting for recording thread (120s). \
+                     Collected {} segments so far. Proceeding with what we have.",
+                    segments.len()
+                );
+                break;
+            }
+        }
+    }
+
+    tracing::info!("Collected {} transcript segments total", segments.len());
+    segments
+}
+
 async fn start_recording_internal(state: &mut DaemonState, title: String) -> Result<String> {
     if state.recording {
         return Err(MuesliError::AlreadyRecording);
@@ -661,14 +667,18 @@ async fn start_audio_recording(state: &mut DaemonState, audio_path: PathBuf) -> 
         }
     }
 
-    let (segment_tx, segment_rx) = std::sync::mpsc::channel();
+    let (segment_tx, segment_rx) = std::sync::mpsc::channel::<TranscriptSegment>();
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
         rt.block_on(async move {
-            let segments =
-                run_recording_task(audio_path_task, audio_running_task, streaming_backend).await;
-            let _ = segment_tx.send(segments);
+            run_recording_task(
+                audio_path_task,
+                audio_running_task,
+                streaming_backend,
+                segment_tx,
+            )
+            .await;
         });
     });
 
@@ -706,12 +716,13 @@ async fn run_recording_task(
     audio_path: PathBuf,
     is_running: Arc<AtomicBool>,
     streaming_backend: Option<WhisperStreamingConfig>,
-) -> Vec<TranscriptSegment> {
+    segment_tx: std::sync::mpsc::Sender<TranscriptSegment>,
+) {
     let mut recorder = match WavRecorder::new(&audio_path) {
         Ok(rec) => rec,
         Err(e) => {
             tracing::error!("Failed to create WAV recorder: {}", e);
-            return Vec::new();
+            return;
         }
     };
 
@@ -734,7 +745,7 @@ async fn run_recording_task(
         Ok(capture) => capture,
         Err(e) => {
             tracing::error!("Failed to initialize microphone: {}", e);
-            return Vec::new();
+            return;
         }
     };
 
@@ -742,7 +753,7 @@ async fn run_recording_task(
         Ok(result) => result,
         Err(e) => {
             tracing::error!("Failed to start microphone: {}", e);
-            return Vec::new();
+            return;
         }
     };
 
@@ -771,6 +782,7 @@ async fn run_recording_task(
     };
 
     let (mixed_tx, mut mixed_rx) = broadcast::channel::<AudioChunk>(100);
+    let mut forwarded_count: usize = 0;
 
     if let Some(loopback_rx) = loopback_rx_opt {
         let _mixer_handle = tokio::spawn(async move {
@@ -791,6 +803,10 @@ async fn run_recording_task(
                     }
                     if let Some(ref t) = transcriber {
                         let _ = t.feed_samples(&chunk.samples);
+                        for seg in t.drain_segments() {
+                            let _ = segment_tx.send(seg);
+                            forwarded_count += 1;
+                        }
                     }
                 }
                 Ok(Err(broadcast::error::RecvError::Closed)) => break,
@@ -817,6 +833,10 @@ async fn run_recording_task(
                     }
                     if let Some(ref t) = transcriber {
                         let _ = t.feed_samples(&chunk.samples);
+                        for seg in t.drain_segments() {
+                            let _ = segment_tx.send(seg);
+                            forwarded_count += 1;
+                        }
                     }
                 }
                 Ok(Err(broadcast::error::RecvError::Closed)) => break,
@@ -825,6 +845,11 @@ async fn run_recording_task(
             }
         }
     }
+
+    tracing::info!(
+        "Recording loop ended. Forwarded {} segments during recording.",
+        forwarded_count
+    );
 
     drop(mic_stream);
     drop(loopback_stream_opt);
@@ -837,6 +862,10 @@ async fn run_recording_task(
         }
         if let Some(ref t) = transcriber {
             let _ = t.feed_samples(&chunk.samples);
+            for seg in t.drain_segments() {
+                let _ = segment_tx.send(seg);
+                forwarded_count += 1;
+            }
         }
     }
 
@@ -852,20 +881,22 @@ async fn run_recording_task(
     if let Some(t) = transcriber {
         let _ = t.flush();
         match t.stop() {
-            Ok(segments) => {
+            Ok(final_segments) => {
                 tracing::info!(
-                    "Streaming transcription complete: {} segments",
-                    segments.len()
+                    "Streaming transcription finalized: {} remaining segments (total forwarded during recording: {})",
+                    final_segments.len(),
+                    forwarded_count
                 );
-                return segments;
+                for seg in final_segments {
+                    let _ = segment_tx.send(seg);
+                }
             }
             Err(e) => {
                 tracing::error!("Failed to stop transcriber: {}", e);
             }
         }
     }
-
-    Vec::new()
+    // segment_tx dropped here — closes channel, unblocking the collector
 }
 
 async fn mic_only_task(
