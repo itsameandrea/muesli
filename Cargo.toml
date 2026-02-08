@@ -1,6 +1,6 @@
 [package]
 name = "muesli"
-version = "0.2.7"
+version = "0.2.8"
 edition = "2021"
 description = "AI-powered meeting note-taker for Linux/Hyprland"
 license = "MIT"
