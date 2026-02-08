@@ -31,9 +31,13 @@ pub async fn ask(question: &str) -> Result<()> {
     println!("Asking LLM...\n");
 
     let prompt = format!(
-        "Based on the following meeting notes, answer this question concisely: {}\n\n\
-         Meeting Notes Context:\n{}\n\n\
-         Provide a clear, direct answer. Reference which meeting(s) the information comes from.",
+        "You are a meeting notes assistant. Answer questions using ONLY the meeting notes provided below. \
+         Do NOT use any outside knowledge. If the notes do not contain enough information to answer \
+         the question, say so clearly.\n\n\
+         Question: {}\n\n\
+         Meeting Notes:\n{}\n\n\
+         Provide a clear, direct answer. Reference which meeting(s) the information comes from. \
+         If the answer cannot be determined from these notes alone, state that explicitly.",
         question, search_results
     );
 
